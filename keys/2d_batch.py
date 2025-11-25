@@ -19,6 +19,10 @@ OUT_ROOT = "KognitiveNeurowissenschaften/PriCaB/HomeCage/Videos/_processed"
 
 # ABT headless repo (module invocation)
 ABT_VENV = "/home/cams/Desktop/ABT/ABT_venv/bin/python"
+print("ABT venv Python:", ABT_VENV)  # quick sanity print
+if not os.path.isfile(ABT_VENV):
+    print(f"ERROR: ABT venv python not found: {ABT_VENV}", file=sys.stderr); sys.exit(1)
+
 ABT_ROOT = "/home/cams/Desktop/ABT/ABT_Software-headless"
 BOXPOSE = os.path.join(ABT_ROOT, "models/box_pose_detector/monkey_box_pose.pt")
 
@@ -118,8 +122,7 @@ for i, src in enumerate(sources, 1):
     VENV_PY = os.path.expanduser("~/Desktop/ABT/ABT_venv/bin/python")
 
     cmd = [
-        ABT_VENV, # Invoke within the virtual environment where ABT is installed
-        "-m", "Modules_2D.box_pose_identification_2d",
+        ABT_VENV, "-m", "Modules_2D.box_pose_identification_2d",
         "-b", BOXPOSE,
         "-v", src,
         "-m", NUM_MONKEYS,
