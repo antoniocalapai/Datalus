@@ -1,117 +1,152 @@
-import os
-import cv2
+import subprocess
+import json
 import numpy as np
+import cv2
+import os
 from glob import glob
 from tqdm import tqdm
 
 BASE = "/Users/acalapai/Desktop/test"
-OUT_FRAMES = os.path.join(BASE, "frames")
-OUT_MULTI = os.path.join(BASE, "multiview")
-os.makedirs(OUT_FRAMES, exist_ok=True)
-os.makedirs(OUT_MULTI, exist_ok=True)
+FFMPEG = "/opt/homebrew/bin/ffmpeg"
+FFPROBE = "/opt/homebrew/bin/ffprobe"
+FPS = 5
+OUT_VIDEO = os.path.join(BASE, "multiview.mp4")
 
-# ---------------------------------------------------------
-# Detect whether step 1 has already been completed
-# ---------------------------------------------------------
-videos = sorted(glob(os.path.join(BASE, "*.mp4")))
-print("Found videos:", videos)
+# --------------------------------------------------------
+# Load 4 videos
+# --------------------------------------------------------
+VIDEOS = sorted(glob(os.path.join(BASE, "*.mp4")))
+if len(VIDEOS) != 4:
+    raise RuntimeError(f"Expected 4 videos, found {len(VIDEOS)}")
 
-frame_dirs = []
-step1_needed = False
+print("Using videos:")
+for v in VIDEOS:
+    print(" -", v)
 
-for vid in videos:
-    name = os.path.splitext(os.path.basename(vid))[0]
-    outdir = os.path.join(OUT_FRAMES, name)
-    frame_dirs.append(outdir)
+# --------------------------------------------------------
+# Get resolution using ffprobe JSON reliably
+# --------------------------------------------------------
+def probe(path):
+    cmd = [
+        FFPROBE,
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_streams",
+        path
+    ]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    info = json.loads(p.stdout.read())
+    stream = [s for s in info["streams"] if s["codec_type"] == "video"][0]
+    return stream["width"], stream["height"]
 
-    pngs = glob(os.path.join(outdir, "*.png"))
-    if len(pngs) == 0:   # no extracted frames found
-        step1_needed = True
+sizes = [probe(v) for v in VIDEOS]
+widths = [w for (w,h) in sizes]
+heights = [h for (w,h) in sizes]
 
-# ---------------------------------------------------------
-# 1. Extract frames (only if needed)
-# ---------------------------------------------------------
-if step1_needed:
-    print("Step 1: Extracting frames...")
-    for vid, outdir in zip(videos, frame_dirs):
-        name = os.path.splitext(os.path.basename(vid))[0]
-        os.makedirs(outdir, exist_ok=True)
+W = min(widths)   # force all 4 to same size
+H = min(heights)
 
-        cap = cv2.VideoCapture(vid)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+print(f"\nFinal chosen working resolution: {W}x{H}\n")
 
-        pbar = tqdm(total=total_frames, desc=f"Extracting {name}", unit="frame")
+# --------------------------------------------------------
+# Start readers (raw RGB24 frames, resized by ffmpeg)
+# --------------------------------------------------------
+def start_reader(video):
+    cmd = [
+        FFMPEG,
+        "-i", video,
+        "-vf", f"fps={FPS},scale={W}:{H}",
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-"
+    ]
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE)
 
-        idx = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            cv2.imwrite(os.path.join(outdir, f"{idx:06d}.png"), frame)
-            idx += 1
-            pbar.update(1)
+readers = [start_reader(v) for v in VIDEOS]
 
-        pbar.close()
-        cap.release()
-        print(f"Extracted {idx} frames from {vid}")
-else:
-    print("Step 1 skipped — existing PNG frames detected.")
+# --------------------------------------------------------
+# Setup writer
+# --------------------------------------------------------
+border = 10
+collage_W = W*2 + 40
+collage_H = H*2 + 40
 
-# ---------------------------------------------------------
-# 2. Create multiview 2x2 collage frames (with black borders)
-# ---------------------------------------------------------
-print("Loading extracted frames...")
-frame_lists = [sorted(glob(os.path.join(d, "*.png"))) for d in frame_dirs]
-num_frames = min(len(fl) for fl in frame_lists)
+writer = subprocess.Popen(
+    [
+        FFMPEG,
+        "-y",
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", f"{collage_W}x{collage_H}",
+        "-r", str(FPS),
+        "-i", "-",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        OUT_VIDEO,
+    ],
+    stdin=subprocess.PIPE
+)
 
-print("Creating multiview frames...")
+# --------------------------------------------------------
+# Process frames
+# --------------------------------------------------------
+font = cv2.FONT_HERSHEY_SIMPLEX
+font_scale = 1.2
+thickness = 3
 
-border = 10  # border thickness in pixels
+# We don't know exact frame count (ffprobe duration unreliable with MPEG4 SP)
+# So we run until any stream ends
+frame_index = 0
 
-for i in tqdm(range(num_frames), desc="Building multiview", unit="frame"):
-    imgs = [cv2.imread(frame_lists[k][i]) for k in range(4)]
+print("Processing frames...")
 
-    # Resize to match the first image
-    h, w = imgs[0].shape[:2]
-    imgs_resized = [cv2.resize(im, (w, h)) for im in imgs]
+while True:
+    frames = []
+    for r in readers:
+        raw = r.stdout.read(W * H * 3)
+        if len(raw) < W * H * 3:
+            frames = []
+            break
+        img = np.frombuffer(raw, dtype=np.uint8).reshape((H, W, 3))
+        frames.append(img)
 
-    # Add black border around each image
-    imgs_bordered = [
-        cv2.copyMakeBorder(
-            im, border, border, border, border,
-            cv2.BORDER_CONSTANT,
-            value=(0, 0, 0)  # black color
-        )
-        for im in imgs_resized
+    if len(frames) < 4:
+        break
+
+    # Add borders
+    bordered = [
+        cv2.copyMakeBorder(f, border, border, border, border,
+                           cv2.BORDER_CONSTANT, value=(0,0,0))
+        for f in frames
     ]
 
-    # Update sizes after border
-    h2, w2 = imgs_bordered[0].shape[:2]
+    top = np.hstack(bordered[:2])
+    bottom = np.hstack(bordered[2:])
+    collage = np.vstack([top, bottom])
 
-    # Build collage
-    top = cv2.hconcat(imgs_bordered[:2])
-    bottom = cv2.hconcat(imgs_bordered[2:])
-    collage = cv2.vconcat([top, bottom])
+    # Frame number
+    label = f"Frame {frame_index}"
+    (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
+    x = collage.shape[1] - tw - 20
+    y = th + 20
 
-    cv2.imwrite(os.path.join(OUT_MULTI, f"{i:06d}.png"), collage)
+    cv2.putText(collage, label, (x+2, y+2), font, font_scale, (0,0,0), thickness+2)
+    cv2.putText(collage, label, (x, y),     font, font_scale, (255,255,255), thickness)
 
-# ---------------------------------------------------------
-# 3. Convert multiview frames into a 5 FPS video
-# ---------------------------------------------------------
-multiview_frames = sorted(glob(os.path.join(OUT_MULTI, "*.png")))
-example = cv2.imread(multiview_frames[0])
-h, w = example.shape[:2]
+    writer.stdin.write(collage.tobytes())
 
-fps = 5
-out_video = os.path.join(BASE, "multiview.mp4")
-fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-writer = cv2.VideoWriter(out_video, fourcc, fps, (w, h))
+    frame_index += 1
 
-print("Writing multiview video...")
+# --------------------------------------------------------
+# Cleanup
+# --------------------------------------------------------
+writer.stdin.close()
+writer.wait()
 
-for f in tqdm(multiview_frames, desc="Saving video", unit="frame"):
-    img = cv2.imread(f)
-    writer.write(img)
+for r in readers:
+    r.stdout.close()
 
-writer.release()
-print("Multiview video saved:", out_video)
+print("\nDONE — created:")
+print(OUT_VIDEO)
