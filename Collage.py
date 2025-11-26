@@ -10,10 +10,13 @@ BASE = "/Users/acalapai/Desktop/test"
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 FFPROBE = "/opt/homebrew/bin/ffprobe"
 FPS = 5
+
 OUT_VIDEO = os.path.join(BASE, "multiview.mp4")
+FRAMES_DIR = os.path.join(BASE, "frames")
+os.makedirs(FRAMES_DIR, exist_ok=True)
 
 # --------------------------------------------------------
-# Load 4 videos
+# Detect videos
 # --------------------------------------------------------
 VIDEOS = sorted(glob(os.path.join(BASE, "*.mp4")))
 if len(VIDEOS) != 4:
@@ -24,7 +27,7 @@ for v in VIDEOS:
     print(" -", v)
 
 # --------------------------------------------------------
-# Get resolution using ffprobe JSON reliably
+# Probe video size
 # --------------------------------------------------------
 def probe(path):
     cmd = [
@@ -34,23 +37,46 @@ def probe(path):
         "-show_streams",
         path
     ]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    info = json.loads(p.stdout.read())
+    info = json.loads(subprocess.check_output(cmd))
     stream = [s for s in info["streams"] if s["codec_type"] == "video"][0]
     return stream["width"], stream["height"]
 
 sizes = [probe(v) for v in VIDEOS]
-widths = [w for (w,h) in sizes]
-heights = [h for (w,h) in sizes]
+widths = [s[0] for s in sizes]
+heights = [s[1] for s in sizes]
 
-W = min(widths)   # force all 4 to same size
+W = min(widths)
 H = min(heights)
 
-print(f"\nFinal chosen working resolution: {W}x{H}\n")
+print(f"\nChosen working resolution (min across videos): {W}x{H}\n")
 
 # --------------------------------------------------------
-# Start readers (raw RGB24 frames, resized by ffmpeg)
+# STEP 1 — EXTRACT PNG FRAMES PER CAMERA (FAST, USING FFMPEG)
 # --------------------------------------------------------
+print("Extracting individual PNG frames from each video...")
+
+for video in VIDEOS:
+    name = os.path.splitext(os.path.basename(video))[0]
+    outdir = os.path.join(FRAMES_DIR, name)
+    os.makedirs(outdir, exist_ok=True)
+
+    cmd = [
+        FFMPEG,
+        "-y",
+        "-i", video,
+        "-vf", f"fps={FPS},scale={W}:{H}",
+        os.path.join(outdir, "%06d.png")
+    ]
+
+    print(f" → Extracting {name} ...")
+    subprocess.run(cmd)
+
+print("PNG extraction completed.\n")
+
+# --------------------------------------------------------
+# STEP 2 — RAM-ONLY MULTIVIEW COLLAGE
+# --------------------------------------------------------
+
 def start_reader(video):
     cmd = [
         FFMPEG,
@@ -64,9 +90,6 @@ def start_reader(video):
 
 readers = [start_reader(v) for v in VIDEOS]
 
-# --------------------------------------------------------
-# Setup writer
-# --------------------------------------------------------
 border = 10
 collage_W = W*2 + 40
 collage_H = H*2 + 40
@@ -89,20 +112,17 @@ writer = subprocess.Popen(
     stdin=subprocess.PIPE
 )
 
-# --------------------------------------------------------
-# Process frames
-# --------------------------------------------------------
 font = cv2.FONT_HERSHEY_SIMPLEX
 font_scale = 1.2
 thickness = 3
+padding = 10
 
-# We don't know exact frame count (ffprobe duration unreliable with MPEG4 SP)
-# So we run until any stream ends
+print("Building multiview video...")
+
 frame_index = 0
 
-print("Processing frames...")
-
 while True:
+    # Read next frame from all 4 videos
     frames = []
     for r in readers:
         raw = r.stdout.read(W * H * 3)
@@ -115,38 +135,50 @@ while True:
     if len(frames) < 4:
         break
 
-    # Add borders
+    # Add border around each frame
     bordered = [
         cv2.copyMakeBorder(f, border, border, border, border,
                            cv2.BORDER_CONSTANT, value=(0,0,0))
         for f in frames
     ]
 
+    # Build 2×2 collage
     top = np.hstack(bordered[:2])
     bottom = np.hstack(bordered[2:])
     collage = np.vstack([top, bottom])
 
-    # Frame number
+    # --------------------------------------------------------
+    # Draw dark rectangle behind frame number
+    # --------------------------------------------------------
     label = f"Frame {frame_index}"
     (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
-    x = collage.shape[1] - tw - 20
-    y = th + 20
 
-    cv2.putText(collage, label, (x+2, y+2), font, font_scale, (0,0,0), thickness+2)
-    cv2.putText(collage, label, (x, y),     font, font_scale, (255,255,255), thickness)
+    x = collage.shape[1] - tw - padding*2
+    y = th + padding
+
+    # dark background rectangle
+    cv2.rectangle(
+        collage,
+        (x - padding, y - th - padding),
+        (x + tw + padding, y + padding),
+        (0,0,0),
+        -1
+    )
+
+    # white text
+    cv2.putText(collage, label, (x, y), font, font_scale, (255,255,255), thickness)
 
     writer.stdin.write(collage.tobytes())
-
     frame_index += 1
 
-# --------------------------------------------------------
 # Cleanup
-# --------------------------------------------------------
 writer.stdin.close()
 writer.wait()
 
 for r in readers:
     r.stdout.close()
 
-print("\nDONE — created:")
+print("\nDONE — Created multiview video:")
 print(OUT_VIDEO)
+print("Extracted frames in:")
+print(FRAMES_DIR)
