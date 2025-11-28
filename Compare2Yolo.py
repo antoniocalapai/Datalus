@@ -4,17 +4,19 @@ import cv2
 import time
 from glob import glob
 from ultralytics import YOLO
+import re
 
 # ============================================================
 # CONFIG
 # ============================================================
-RAW_BASE = "/Users/acalapai/Desktop/RawVideos"
-PROC_BASE = "/Users/acalapai/Desktop/ProcessedVideos"
-OUT_DIR = "/Users/acalapai/Desktop/YOLOv9_Comparisons"
+RAW_BASE = "/Users/acalapai/Desktop/Collage/RAW/250711/"         # unprocessed videos
+PROC_BASE = "/Users/acalapai/Desktop/Collage"           # ABT-processed videos
+OUT_DIR = "/Users/acalapai/Desktop/Collage/YOLOv9_Test"         # where collage videos go
 
-MODEL_PATH = "yolov9c.pt"       # you downloaded this
-PREVIEW_MIN = 5                 # first 5 minutes
-DOWNSAMPLE = 0.5                # 50% reduction for speed
+MODEL_PATH = "yolov9c.pt"    # YOLOv9 checkpoint
+PREVIEW_MIN = 5              # first 5 minutes
+DOWNSAMPLE = 0.5             # scale factor for speed
+
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ============================================================
@@ -24,39 +26,62 @@ print("\nLoading YOLOv9 model…")
 model = YOLO(MODEL_PATH)
 
 # ============================================================
-# FIND RAW & PROCESSED VIDEOS (match by camera ID)
+# CAMERA-ID EXTRACTION
+# RAW videos look like: 102_20250708161657.mp4
+# PROCESSED videos look like: July_2025__102_....
 # ============================================================
 def extract_cam_id(path):
-    """Matches your naming: __102_, __108_ etc."""
-    import re
     name = os.path.basename(path)
-    m = re.search(r"__([0-9]{3})_", name)
-    return m.group(1) if m else None
 
+    # RAW style: 102_202507...
+    m = re.match(r"(\d{3})_", name)
+    if m:
+        return m.group(1)
+
+    # PROCESSED style: July_2025__102_....
+    m = re.search(r"__([0-9]{3})_", name)
+    if m:
+        return m.group(1)
+
+    return None
+
+# ============================================================
+# LOCATE VIDEOS
+# ============================================================
 raw_videos = sorted(glob(os.path.join(RAW_BASE, "*.mp4")))
 proc_videos = sorted(glob(os.path.join(PROC_BASE, "*.mp4")))
 
-if len(raw_videos) == 0:
-    raise RuntimeError("No RAW videos found.")
-if len(proc_videos) == 0:
-    raise RuntimeError("No PROCESSED videos found.")
+if not raw_videos:
+    raise RuntimeError(f"No RAW videos in {RAW_BASE}")
+if not proc_videos:
+    raise RuntimeError(f"No PROCESSED videos in {PROC_BASE}")
 
 raw_dict = {extract_cam_id(v): v for v in raw_videos}
 proc_dict = {extract_cam_id(v): v for v in proc_videos}
 
-# Keep only cameras present in both
 cams = sorted(set(raw_dict.keys()) & set(proc_dict.keys()))
-if len(cams) == 0:
-    raise RuntimeError("No matching camera IDs found across raw + processed videos.")
 
-print("\nMatched cameras:")
+if not cams:
+    raise RuntimeError("No matching camera IDs between raw and processed videos.")
+
+print("\nMatched Cameras:")
 for c in cams:
     print(f"  Cam {c}:")
-    print(f"       RAW:  {raw_dict[c]}")
-    print(f"       PROC: {proc_dict[c]}")
+    print(f"     RAW:  {raw_dict[c]}")
+    print(f"     PROC: {proc_dict[c]}")
 
 # ============================================================
-# MAIN LOOP FOR EACH CAMERA
+# PROGRESS BAR
+# ============================================================
+def bar(prefix, i, total):
+    width = 30
+    r = min(1.0, i / float(total))
+    fill = int(r * width)
+    line = "#" * fill + "-" * (width - fill)
+    print(f"\r{prefix} [{line}] {i}/{total}", end="", flush=True)
+
+# ============================================================
+# PROCESS EACH CAMERA
 # ============================================================
 for cam in cams:
 
@@ -65,52 +90,47 @@ for cam in cams:
 
     print("\n=====================================================")
     print(f"Processing camera {cam}")
-    print("RAW:       ", raw_path)
-    print("PROCESSED: ", proc_path)
+    print(f"RAW:       {raw_path}")
+    print(f"PROCESSED: {proc_path}")
     print("=====================================================\n")
 
     cap_raw = cv2.VideoCapture(raw_path)
     cap_proc = cv2.VideoCapture(proc_path)
 
     if not cap_raw.isOpened():
-        print("ERROR: cannot open raw video:", raw_path)
+        print("❌ ERROR: cannot open raw video")
         continue
     if not cap_proc.isOpened():
-        print("ERROR: cannot open processed video:", proc_path)
+        print("❌ ERROR: cannot open processed video")
         continue
 
     fps = cap_raw.get(cv2.CAP_PROP_FPS)
-    total_frames = cap_raw.get(cv2.CAP_PROP_FRAME_COUNT)
+    total_frames_raw  = int(cap_raw.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_frames_proc = int(cap_proc.get(cv2.CAP_PROP_FRAME_COUNT))
+
     limit_frames = int(PREVIEW_MIN * 60 * fps)
+    limit_frames = min(limit_frames, total_frames_raw, total_frames_proc)
 
     print(f"FPS = {fps}")
-    print(f"Total frames raw  = {int(total_frames)}")
-    print(f"Processing up to   = {limit_frames}\n")
+    print(f"RAW frames  = {total_frames_raw}")
+    print(f"PROC frames = {total_frames_proc}")
+    print(f"Processing first {limit_frames} frames\n")
 
-    # Output path
     out_path = os.path.join(OUT_DIR, f"cam_{cam}_YOLOv9_compare.mp4")
-
-    # Video writer
-    out_w = None
-    out_h = None
     out_writer = None
-
     frame_idx = 0
 
-    while True:
+    while frame_idx < limit_frames:
+
+        bar("Progress", frame_idx, limit_frames)
+
         ok1, raw_frame = cap_raw.read()
         ok2, proc_frame = cap_proc.read()
-
-        if not ok1 or not ok2:
-            print("Reached end of one of the videos.")
-            break
-
-        if frame_idx >= limit_frames:
-            print("Reached preview limit.")
+        if not (ok1 and ok2):
             break
 
         # -------------------------------------------
-        # Downsample both views
+        # Downsample (optional)
         # -------------------------------------------
         if DOWNSAMPLE != 1.0:
             raw_small = cv2.resize(raw_frame, None, fx=DOWNSAMPLE, fy=DOWNSAMPLE)
@@ -121,38 +141,32 @@ for cam in cams:
         # -------------------------------------------
         # YOLOv9 DETECTION
         # -------------------------------------------
-        results = model.predict(
-            raw_small,
-            device="mps",
-            verbose=False
-        )
-        yolo_vis = results[0].plot()   # detections drawn
+        yres = model.predict(raw_small, device="mps", verbose=False)
+        yolo_vis = yres[0].plot()   # overlayed bounding boxes
 
         # -------------------------------------------
-        # SIDE-BY-SIDE COLLAGE
-        # left  = processed ABT video
-        # right = YOLOv9 detection
+        # CREATE SIDE-BY-SIDE VIEW
         # -------------------------------------------
         combined = cv2.hconcat([proc_small, yolo_vis])
 
-        # initialize writer once
         if out_writer is None:
-            out_h, out_w = combined.shape[:2]
+            H, W = combined.shape[:2]
             out_writer = cv2.VideoWriter(
                 out_path,
                 cv2.VideoWriter_fourcc(*"mp4v"),
                 fps,
-                (out_w, out_h)
+                (W, H)
             )
 
         out_writer.write(combined)
         frame_idx += 1
 
+    print("\n")
     cap_raw.release()
     cap_proc.release()
     if out_writer:
         out_writer.release()
 
-    print(f"Saved: {out_path}")
+    print(f"✔ Saved: {out_path}\n")
 
-print("\nDONE — all comparisons complete.")
+print("\nDONE — all YOLOv9 comparisons created.")
