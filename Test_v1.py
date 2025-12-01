@@ -44,6 +44,8 @@ full_video_path = os.path.join(
 deeplabcut.filterpredictions(config_path, [full_video_path], videotype=videotype)
 
 # re-create the video with your edits!
-deeplabcut.create_labeled_video(config_path, [full_video_path], videotype=videotype, displayedbodyparts=bodyparts,
+deeplabcut.create_labeled_video(config_path, [full_video_path],
+                                videotype=videotype,
+                                displayedbodyparts=bodyparts,
                                 filtered=True)
 
