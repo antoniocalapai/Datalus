@@ -18,6 +18,9 @@ FFPROBE = "/opt/homebrew/bin/ffprobe"
 # Preview length in minutes (1 = 1 minute, 0 = full video)
 PREVIEW_MINUTES = 0
 
+# Speed-up factor (10 = 10x faster)
+SPEEDUP = 10
+
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE = 0.5
 THICKNESS = 1
@@ -132,17 +135,23 @@ H = H // 2 * 2
 
 print(f"Downscaled resolution used for ALL cameras: {W}x{H}")
 
-# FPS from first video
-FPS_FLOAT = probe_fps(VIDEOS[0])
-FPS = int(round(FPS_FLOAT))
-if FPS <= 0:
-    raise RuntimeError(f"Invalid FPS computed: {FPS_FLOAT}")
+# INPUT FPS from first video (for timestamps + preview length)
+INPUT_FPS_FLOAT = probe_fps(VIDEOS[0])
+INPUT_FPS = int(round(INPUT_FPS_FLOAT))
+if INPUT_FPS <= 0:
+    raise RuntimeError(f"Invalid INPUT_FPS computed: {INPUT_FPS_FLOAT}")
 
-print(f"Detected FPS (from video): {FPS_FLOAT:.3f} → using {FPS} fps\n")
+# Output FPS: keep same as input; we speed up by dropping frames
+MULTIVIEW_FPS = INPUT_FPS
 
-# Preview frames: exactly 1 minute if PREVIEW_MINUTES > 0
+print(f"Detected INPUT FPS (from video): {INPUT_FPS_FLOAT:.3f} → using {INPUT_FPS} fps")
+print(f"Output FPS (multiview): {MULTIVIEW_FPS} fps")
+print(f"Speed-up: {SPEEDUP}x (keep every {SPEEDUP}th frame)\n")
+
+# Preview frames: exactly N minutes of *output video*,
+# which corresponds to N * SPEEDUP minutes of real time.
 if PREVIEW_MINUTES > 0:
-    PREVIEW_FRAMES = int(PREVIEW_MINUTES * 60 * FPS)
+    PREVIEW_FRAMES = int(PREVIEW_MINUTES * 60 * MULTIVIEW_FPS)
 else:
     PREVIEW_FRAMES = None
 
@@ -150,11 +159,13 @@ else:
 # FFmpeg Readers
 # ================================================================
 def start_reader(video):
-    # IMPORTANT: use the same W,H for all streams to avoid jitter
+    # Keep only every SPEEDUP-th frame to accelerate time
+    # Then scale to shared W,H.
     cmd = [
         FFMPEG,
+        "-v", "error",
         "-i", video,
-        "-vf", f"scale={W}:{H},fps={FPS}",
+        "-vf", f"select='not(mod(n\\,{SPEEDUP}))',setpts=N/FRAME_RATE/TB,scale={W}:{H}",
         "-f", "rawvideo",
         "-pix_fmt", "rgb24",
         "-"
@@ -170,9 +181,9 @@ coll_W = W * 2 + 40
 coll_H = H * 2 + 40
 
 OUT_NAME = (
-    f"{SESSION_DATE}_multiview_preview.mp4"
+    f"{SESSION_DATE}_multiview_preview_{SPEEDUP}x.mp4"
     if PREVIEW_MINUTES > 0 else
-    f"{SESSION_DATE}_multiview.mp4"
+    f"{SESSION_DATE}_multiview_{SPEEDUP}x.mp4"
 )
 OUT_VIDEO = os.path.join(BASE, "multiview", OUT_NAME)
 os.makedirs(os.path.dirname(OUT_VIDEO), exist_ok=True)
@@ -184,7 +195,7 @@ writer = subprocess.Popen(
         "-vcodec", "rawvideo",
         "-pix_fmt", "rgb24",
         "-s", f"{coll_W}x{coll_H}",
-        "-r", str(FPS),
+        "-r", str(MULTIVIEW_FPS),
         "-i", "-",
         "-c:v", "libx264",
         "-preset", "fast",
@@ -238,7 +249,8 @@ while True:
     collage = np.vstack([top, bottom])
 
     # --- TIME OVERLAYS ---
-    time_now = SESSION_START + timedelta(seconds=frame_idx / FPS)
+    # Output frame_idx advances at MULTIVIEW_FPS, but real session time is SPEEDUP times faster.
+    time_now = SESSION_START + timedelta(seconds=(frame_idx * SPEEDUP) / INPUT_FPS)
     time_of_day_str = time_now.strftime("%H:%M:%S")
 
     elapsed = time_now - SESSION_START
@@ -250,7 +262,7 @@ while True:
 
     draw_text_with_bg(
         collage,
-        f"Session {SESSION_DATE}   |   Frame {frame_idx}",
+        f"Session {SESSION_DATE}   |   OutFrame {frame_idx}   |   {SPEEDUP}x",
         (20, 50)
     )
     draw_text_with_bg(
@@ -287,7 +299,7 @@ for r in readers:
     try:
         r.stdout.close()
         r.terminate()
-    except:
+    except Exception:
         pass
 
 print("\nDONE — Created:")
