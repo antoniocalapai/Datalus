@@ -5,22 +5,22 @@
 ### Calibration Videos (2 sessions, 4 cameras each)
 ```
 SESSION_250707:
-  CAM_102 = "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250707/Calibration_4_102_20250707154928.mp4"
-  CAM_108 = "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250707/Calibration_4_108_20250707154928.mp4"
-  CAM_113 = "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250707/Calibration_4_113_20250707154928.mp4"
-  CAM_117 = "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250707/Calibration_4_117_20250707154928.mp4"
+  CAM_102 = "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250707/Calibration_4_102_20250707154928.mp4"
+  CAM_108 = "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250707/Calibration_4_108_20250707154928.mp4"
+  CAM_113 = "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250707/Calibration_4_113_20250707154928.mp4"
+  CAM_117 = "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250707/Calibration_4_117_20250707154928.mp4"
 
 SESSION_250708:
-  CAM_102 = "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250708/_2_102_20250708161657.mp4"
-  CAM_108 = "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250708/_2_108_20250708161657.mp4"
-  CAM_113 = "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250708/_2_113_20250708161657.mp4"
-  CAM_117 = "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250708/_2_117_20250708161657.mp4"
+  CAM_102 = "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250708/_2_102_20250708161657.mp4"
+  CAM_108 = "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250708/_2_108_20250708161657.mp4"
+  CAM_113 = "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250708/_2_113_20250708161657.mp4"
+  CAM_117 = "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250708/_2_117_20250708161657.mp4"
 ```
 
 ### ABT Codebase
 ```
-ABT_ROOT = "/Users/acalapai/ownCloud/Shared/HomeCage/ABT_Software-main"                  # root directory of the ABT repo
-ABT_3D_TRANSFORM_MODULE = "/Users/acalapai/ownCloud/Shared/HomeCage/ABT_Software-main/Modules_3D"   # path to the 3D Transformation module file(s)
+ABT_ROOT = "/Users/acalapai/PycharmProjects/Datalus/ABT_Software-main"                  # root directory of the ABT repo
+ABT_3D_TRANSFORM_MODULE = "/Users/acalapai/PycharmProjects/Datalus/ABT_Software-main/Modules_3D"   # path to the 3D Transformation module file(s)
 ```
 
 ### Example YAML File
@@ -30,12 +30,12 @@ EXAMPLE_YAML = ""              # path to an existing camera calibration YAML con
 
 ### World Registration CSV
 ```
-WORLD_REGISTRATION_CSV = "/Users/acalapai/ownCloud/Shared/HomeCage/DatalusCalibration"    # path to CSV with columns: name, colmap_x, colmap_y, colmap_z, real_x_mm, real_y_mm, real_z_mm
+WORLD_REGISTRATION_CSV = "/Users/acalapai/PycharmProjects/Datalus/DatalusCalibration"    # path to CSV with columns: name, colmap_x, colmap_y, colmap_z, real_x_mm, real_y_mm, real_z_mm
 ```
 
 ### Output Directory
 ```
-CALIBRATION_OUTPUT_DIR = "/Users/acalapai/ownCloud/Shared/HomeCage/DatalusCalibration"    # where to write the per-camera YAML files
+CALIBRATION_OUTPUT_DIR = "/Users/acalapai/PycharmProjects/Datalus/DatalusCalibration"    # where to write the per-camera YAML files
 ```
 
 ## Checkerboard Specs
