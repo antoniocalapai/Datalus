@@ -25,7 +25,7 @@ from pathlib import Path
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
-OUTPUT_DIR       = "/Users/acalapai/ownCloud/Shared/HomeCage/DatalusCalibration"
+OUTPUT_DIR       = "/Users/acalapai/PycharmProjects/Datalus/DatalusCalibration"
 COLMAP_POSES_NPZ = os.path.join(OUTPUT_DIR, "colmap_poses.npz")
 WORLD_CSV        = os.path.join(OUTPUT_DIR, "world_registration.csv")
 POINTS3D_TXT     = os.path.join(OUTPUT_DIR, "colmap", "sparse_txt", "points3D.txt")
@@ -167,9 +167,8 @@ def main():
 
     if not csv_ready:
         print("\n  world_registration.csv not ready (missing, empty, or < 3 points).")
-        print_points3d_sample(POINTS3D_TXT)
-        create_csv_template(WORLD_CSV)
-        print("\n  Fill in the CSV and re-run this script.")
+        print("  Run DatulusCalib_PointPicker.py to pick reference points interactively,")
+        print("  then fill in real_x_mm / real_y_mm / real_z_mm from your measurements.")
         sys.exit(0)
 
     src, dst, names = load_world_csv(WORLD_CSV)

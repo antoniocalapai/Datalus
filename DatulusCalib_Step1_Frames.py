@@ -18,16 +18,16 @@ import multiprocessing as mp
 
 SESSIONS = {
     "250707": {
-        "102": "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250707/Calibration_4_102_20250707154928.mp4",
-        "108": "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250707/Calibration_4_108_20250707154928.mp4",
-        "113": "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250707/Calibration_4_113_20250707154928.mp4",
-        "117": "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250707/Calibration_4_117_20250707154928.mp4",
+        "102": "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250707/Calibration_4_102_20250707154928.mp4",
+        "108": "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250707/Calibration_4_108_20250707154928.mp4",
+        "113": "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250707/Calibration_4_113_20250707154928.mp4",
+        "117": "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250707/Calibration_4_117_20250707154928.mp4",
     },
     "250708": {
-        "102": "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250708/_2_102_20250708161657.mp4",
-        "108": "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250708/_2_108_20250708161657.mp4",
-        "113": "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250708/_2_113_20250708161657.mp4",
-        "117": "/Users/acalapai/ownCloud/Shared/HomeCage/CalibrationVideos/250708/_2_117_20250708161657.mp4",
+        "102": "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250708/_2_102_20250708161657.mp4",
+        "108": "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250708/_2_108_20250708161657.mp4",
+        "113": "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250708/_2_113_20250708161657.mp4",
+        "117": "/Users/acalapai/PycharmProjects/Datalus/CalibrationVideos/250708/_2_117_20250708161657.mp4",
     },
 }
 
@@ -41,7 +41,7 @@ SENSOR_WIDTH_MM   = 11.2
 FOCAL_LENGTH_MM   = 8.0
 
 COLMAP_BIN        = "/opt/homebrew/bin/colmap"
-OUTPUT_DIR        = "/Users/acalapai/ownCloud/Shared/HomeCage/DatalusCalibration"
+OUTPUT_DIR        = "/Users/acalapai/PycharmProjects/Datalus/DatalusCalibration"
 WORLD_CSV         = os.path.join(OUTPUT_DIR, "world_registration.csv")
 
 PNG_PARAMS        = [cv2.IMWRITE_PNG_COMPRESSION, 0]  # fastest write, no compression

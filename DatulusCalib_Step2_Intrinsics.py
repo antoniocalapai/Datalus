@@ -7,16 +7,35 @@ Run after DatulusCalib_Step1_Frames.py (Step 1).
 """
 
 import os
+import re
 import sys
 import cv2
 import numpy as np
 from pathlib import Path
 import multiprocessing as mp
 
+# ─── LOGGING ──────────────────────────────────────────────────────────────────
+
+class _Tee:
+    def __init__(self, *streams): self.streams = streams
+    def write(self, data):
+        for s in self.streams: s.write(data)
+    def flush(self):
+        for s in self.streams: s.flush()
+    def fileno(self): return self.streams[0].fileno()
+
+def _setup_log(log_path):
+    from datetime import datetime
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    _f = open(log_path, "a")
+    _f.write(f"\n{'='*40}\n{datetime.now():%Y-%m-%d %H:%M:%S}  {Path(sys.argv[0]).name}\n{'='*40}\n")
+    sys.stdout = _Tee(sys.__stdout__, _f)
+    sys.stderr = _Tee(sys.__stderr__, _f)
+
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
-FRAMES_ROOT   = "/Users/acalapai/ownCloud/Shared/HomeCage/DatalusCalibration/frames"
-OUTPUT_DIR    = "/Users/acalapai/ownCloud/Shared/HomeCage/DatalusCalibration"
+FRAMES_ROOT   = "/Users/acalapai/PycharmProjects/Datalus/DatalusCalibration/frames"
+OUTPUT_DIR    = "/Users/acalapai/PycharmProjects/Datalus/DatalusCalibration"
 
 CHESSBOARD    = (13, 9)    # inner corners (width, height)
 SQUARE_SIZE_M = 40.0 / 1000.0  # 40 mm in meters
@@ -72,6 +91,7 @@ def calibrate_intrinsics(frames_root, camera_ids, chessboard, square_size_m,
     objp *= square_size_m
 
     intrinsics = {}
+    all_det    = {}   # cam_id -> (sessions[], frames[], corners[])
 
     for cam_id in camera_ids:
         cam_dir = Path(frames_root) / cam_id
@@ -93,6 +113,7 @@ def calibrate_intrinsics(frames_root, camera_ids, chessboard, square_size_m,
               f"{len(images)} frames to scan")
 
         obj_pts, img_pts = [], []
+        det_sessions, det_frames, det_corners = [], [], []
         total   = len(images)
         n_cores = max(1, int(mp.cpu_count() * 0.75))
         args    = [(str(p), chessboard) for p in images]
@@ -101,12 +122,18 @@ def calibrate_intrinsics(frames_root, camera_ids, chessboard, square_size_m,
 
         completed = 0
         with mp.Pool(processes=n_cores) as pool:
-            for result in pool.imap(_detect_one, args):
+            for idx, result in enumerate(pool.imap(_detect_one, args)):
                 completed += 1
                 if result is not None:
                     obj_pts.append(objp)
                     img_pts.append(result)
+                    m = re.match(r"(\d+)_frame_(\d+)\.png", images[idx].name)
+                    if m:
+                        det_sessions.append(int(m.group(1)))
+                        det_frames.append(int(m.group(2)))
+                        det_corners.append(result[:, 0, :])
                 bar("detecting", completed, total, found=len(obj_pts))
+        all_det[cam_id] = (det_sessions, det_frames, det_corners)
 
         print(f"\n    detections: {len(obj_pts)} / {total}")
 
@@ -143,11 +170,11 @@ def calibrate_intrinsics(frames_root, camera_ids, chessboard, square_size_m,
               f"cx={K[0,2]:.2f}  cy={K[1,2]:.2f}")
         print(f"    dist: {d}")
 
-    return intrinsics
+    return intrinsics, all_det
 
 
-def save_intrinsics(intrinsics, output_dir):
-    """Save all camera intrinsics to a single .npz file."""
+def save_intrinsics(intrinsics, all_det, output_dir):
+    """Save all camera intrinsics and detections to .npz files."""
     out_path = Path(output_dir) / "intrinsics.npz"
     save_dict = {}
     for cam_id, data in intrinsics.items():
@@ -157,17 +184,28 @@ def save_intrinsics(intrinsics, output_dir):
         save_dict[f"{cam_id}_image_size"] = np.array(data["image_size"])
     np.savez(str(out_path), **save_dict)
     print(f"\n  Intrinsics saved to {out_path}")
+
+    det_path = Path(output_dir) / "detections.npz"
+    det_dict = {}
+    for cam_id, (sessions, frames, corners) in all_det.items():
+        if corners:
+            det_dict[f"{cam_id}_sessions"] = np.array(sessions, dtype=np.int32)
+            det_dict[f"{cam_id}_frames"]   = np.array(frames,   dtype=np.int32)
+            det_dict[f"{cam_id}_corners"]  = np.array(corners,  dtype=np.float32)
+    np.savez(str(det_path), **det_dict)
+    print(f"  Detections saved to {det_path}")
     return out_path
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def main():
+    _setup_log(str(Path(__file__).parent / "run.log"))
     print("=" * 60)
     print("DATALUS — STEP 2: INTRINSIC CALIBRATION")
     print("=" * 60)
 
-    intrinsics = calibrate_intrinsics(
+    intrinsics, all_det = calibrate_intrinsics(
         FRAMES_ROOT, CAMERA_IDS, CHESSBOARD, SQUARE_SIZE_M,
         FOCAL_LENGTH_MM, SENSOR_WIDTH_MM
     )
@@ -176,7 +214,7 @@ def main():
         print("\n[ERROR] No cameras calibrated. Check FRAMES_ROOT and checkerboard config.")
         sys.exit(1)
 
-    save_intrinsics(intrinsics, OUTPUT_DIR)
+    save_intrinsics(intrinsics, all_det, OUTPUT_DIR)
 
     print("\nSummary:")
     for cam_id, data in intrinsics.items():
