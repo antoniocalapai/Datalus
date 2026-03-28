@@ -168,15 +168,17 @@ TUNABLE CONSTANTS  (top of file)
 
 import base64
 import json
+import os
 import re
 import sys
 from datetime import datetime
 from itertools import combinations
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import cv2
 import numpy as np
-from scipy.optimize import least_squares, minimize as _sp_minimize
+from scipy.optimize import least_squares, minimize as _sp_minimize, differential_evolution as _de
 
 # ─── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR        = Path(__file__).parent
@@ -401,6 +403,47 @@ def stage2b_extract_viewer_frames(cam_videos, cam_info):
 # Stage 3 — Human pose detection
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _infer_cam(args):
+    """
+    Module-level worker for parallel YOLO11x-pose inference.
+    Must be top-level (not nested) so multiprocessing can pickle it.
+    """
+    cam_id, frame_paths, out_txt_path, model_src, bbox_thresh = args
+    import re as _re
+    import numpy as _np
+    from pathlib import Path as _Path
+    from ultralytics import YOLO as _YOLO          # type: ignore
+    model = _YOLO(model_src)
+    lines = []
+    for img_path in sorted(frame_paths):
+        _m = _re.search(
+            rf"{_re.escape(cam_id)}_frame_(\d+)\.png", _Path(img_path).name)
+        if not _m:
+            continue
+        fidx = int(_m.group(1))
+        res  = model(str(img_path), verbose=False)[0]
+        if res.boxes is None or len(res.boxes) == 0:
+            continue
+        confs = res.boxes.conf.cpu().numpy()
+        best  = int(_np.argmax(confs))
+        if confs[best] < bbox_thresh:
+            continue
+        xyxy = res.boxes.xyxy.cpu().numpy()[best]
+        if res.keypoints is not None and len(res.keypoints.data) > 0:
+            kps = res.keypoints.data.cpu().numpy()[best]   # (17, 3)
+        else:
+            kps = _np.zeros((17, 3), dtype=_np.float32)
+        kp_str = " ".join(
+            f"{kps[i, 0]:.2f} {kps[i, 1]:.2f} {kps[i, 2]:.4f}"
+            for i in range(17))
+        lines.append(
+            f"{fidx} {xyxy[0]:.2f} {xyxy[1]:.2f} {xyxy[2]:.2f} {xyxy[3]:.2f}"
+            f" {confs[best]:.4f} {kp_str}")
+    _Path(out_txt_path).write_text(
+        "\n".join(lines) + ("\n" if lines else ""))
+    return cam_id, len(lines)
+
+
 def _pose_line(frame_idx, x1, y1, x2, y2, bbox_conf, kps):
     """One detection per line: frame x1 y1 x2 y2 bbox_conf kp0x kp0y kp0c …"""
     kp_str = " ".join(
@@ -413,74 +456,44 @@ def _pose_line(frame_idx, x1, y1, x2, y2, bbox_conf, kps):
 
 def stage3_detect_pose(cam_ids, frames_dirs):
     """
-    Run YOLO11-pose on every extracted frame and write detection files.
+    Run YOLO11x-pose on every extracted frame and write detection files.
 
-    Model: yolov8n-pose.pt (downloaded automatically on first run via
-    ultralytics if not present at POSE_MODEL_PATH).
-
-    For each frame, keeps only the highest-confidence bounding box.
-    Detections below BBOX_CONF_THRESH are discarded.
-
-    Output format (PriCaB_output/pose_<cam_id>.txt):
-        One detection per line:
-          frame_idx  x1 y1 x2 y2  bbox_conf
-          kp0_x kp0_y kp0_conf … kp16_x kp16_y kp16_conf
-        Keypoints follow the COCO 17-point layout:
-          0 nose  1 l-eye  2 r-eye  3 l-ear  4 r-ear
-          5 l-shoulder  6 r-shoulder  7 l-elbow  8 r-elbow
-          9 l-wrist  10 r-wrist  11 l-hip  12 r-hip
-          13 l-knee  14 r-knee  15 l-ankle  16 r-ankle
+    Uses multiprocessing.Pool — each worker process loads the model
+    independently so inference runs in parallel across cameras.
 
     Skipped for any camera whose pose_<cam_id>.txt already exists.
     """
-    _header(3, "HUMAN POSE DETECTION  (YOLO11-pose)")
-    model = None
+    _header(3, "HUMAN POSE DETECTION  (YOLO11x-pose, parallel)")
 
+    model_src = (str(POSE_MODEL_PATH) if POSE_MODEL_PATH.exists()
+                 else "yolo11x-pose.pt")
+
+    skipped, to_run = [], []
     for cam_id in sorted(cam_ids):
         out_txt = OUT_DIR / f"pose_{cam_id}.txt"
         if out_txt.exists():
             n = sum(1 for ln in out_txt.read_text().splitlines() if ln.strip())
-            print(f"  cam {cam_id}: {out_txt.name} already exists ({n} lines) — skip")
-            continue
+            skipped.append((cam_id, n))
+        else:
+            ffiles = [str(p) for p in sorted(
+                frames_dirs[cam_id].glob(f"{cam_id}_frame_*.png"))]
+            if ffiles:
+                to_run.append(
+                    (cam_id, ffiles, str(out_txt), model_src, BBOX_CONF_THRESH))
 
-        if model is None:
-            print("  Loading YOLO11-pose model (downloads yolo11x-pose.pt if absent)…")
-            from ultralytics import YOLO  # type: ignore
-            src = str(POSE_MODEL_PATH) if POSE_MODEL_PATH.exists() else "yolo11x-pose.pt"
-            model = YOLO(src)
+    for cam_id, n in skipped:
+        print(f"  cam {cam_id}: pose_{cam_id}.txt exists ({n} lines) — skip")
 
-        frame_files = sorted(
-            frames_dirs[cam_id].glob(f"{cam_id}_frame_*.png"))
-        if not frame_files:
-            print(f"  cam {cam_id}: no frames found — skip")
-            continue
-
-        lines = []
-        for img_path in frame_files:
-            m = re.search(rf"{re.escape(cam_id)}_frame_(\d+)\.png", img_path.name)
-            if not m:
-                continue
-            fidx    = int(m.group(1))
-            results = model(str(img_path), verbose=False)
-            res     = results[0]
-
-            if res.boxes is None or len(res.boxes) == 0:
-                continue
-            confs = res.boxes.conf.cpu().numpy()
-            best  = int(np.argmax(confs))
-            if confs[best] < BBOX_CONF_THRESH:
-                continue
-
-            xyxy = res.boxes.xyxy.cpu().numpy()[best]
-            if res.keypoints is not None and len(res.keypoints.data) > 0:
-                kps = res.keypoints.data.cpu().numpy()[best]   # (17, 3)
-            else:
-                kps = np.zeros((17, 3), dtype=np.float32)
-
-            lines.append(_pose_line(fidx, *xyxy, confs[best], kps))
-
-        out_txt.write_text("\n".join(lines) + ("\n" if lines else ""))
-        print(f"  cam {cam_id}: {len(lines)} detections → {out_txt.name}")
+    if to_run:
+        n_workers = min(len(to_run), max(1, (cpu_count() or 4) // 2))
+        print(f"\n  Running YOLO11x-pose on {len(to_run)} camera(s) "
+              f"with {n_workers} parallel worker(s)…")
+        print("  (first run auto-downloads yolo11x-pose.pt ~113 MB)")
+        with Pool(n_workers) as pool:
+            results = pool.map(_infer_cam, to_run)
+        results.sort(key=lambda r: r[0])
+        for cam_id, n in results:
+            print(f"  cam {cam_id}: {n} detections → pose_{cam_id}.txt")
 
 
 def _load_pose_files(cam_ids):
@@ -1109,8 +1122,9 @@ def stage5_extrinsics(cam_ids, detections, cams):
         return np.array([[c, s, 0.], [-s, c, 0.], [0., 0., 1.]])
 
     # Step 1: optimise yaw (Ry around raw Y = viewer Z)
+    # Multi-start over full 2π to escape local minima
     def _yaw_loss(p):
-        R = _Ry_raw(p[0])
+        R = _Ry_raw(p[0] if hasattr(p, '__len__') else p)
         Cr = {c: R @ C_placed[c] for c in C_placed}
         loss = 0.0
         for grp, ax in [(_WALL_A, 0), (_WALL_B, 0), (_WALL_C, 2), (_WALL_D, 2)]:
@@ -1119,12 +1133,17 @@ def stage5_extrinsics(cam_ids, detections, cams):
                 loss += float(np.var(xs))
         return loss
 
-    res_yaw = _sp_minimize(_yaw_loss, [0.0], method='Nelder-Mead',
-                           options={'xatol': 1e-7, 'fatol': 1e-7, 'maxiter': 4000})
+    best_yaw = None
+    for _t0 in np.linspace(-np.pi, np.pi, 72, endpoint=False):
+        _r = _sp_minimize(_yaw_loss, [_t0], method='Nelder-Mead',
+                          options={'xatol': 1e-9, 'fatol': 1e-9, 'maxiter': 3000})
+        if best_yaw is None or _r.fun < best_yaw.fun:
+            best_yaw = _r
+    res_yaw = best_yaw
     R_yaw   = _Ry_raw(float(res_yaw.x[0]))
     C_yawed = {c: R_yaw @ C_placed[c] for c in C_placed}
     print(f"\n  Wall yaw: θ={np.degrees(res_yaw.x[0]):.2f}°  "
-          f"loss={res_yaw.fun:.1f}  ok={res_yaw.success}")
+          f"loss={res_yaw.fun:.0f}  (global search, 72 starts)")
 
     # Step 2: optimise tilt (Rx, Rz) to level ground cameras
     def _tilt_loss(p):
@@ -1165,20 +1184,41 @@ def stage5_extrinsics(cam_ids, detections, cams):
         poses[cid]["T"] = T_new
         poses[cid]["P"] = cams[cid]["K"] @ np.hstack([R_new, T_new])
 
-    # Diagnostic
-    if _GROUND:
-        _yg = {c: f"{float(poses[c]['C'][1]):.0f}" for c in _GROUND}
-        print(f"  Ground raw-Y after:   {_yg}")
-    _ceil_p = [c for c in ["110","105","102","118"] if c in placed_ids]
-    if _ceil_p:
-        _yc = {c: f"{float(poses[c]['C'][1]):.0f}" for c in _ceil_p}
-        print(f"  Ceiling raw-Y after:  {_yc}")
-    if _WALL_A:
-        _xa = {c: f"{float(poses[c]['C'][0]):.0f}" for c in _WALL_A}
-        print(f"  Wall A raw-X after:   {_xa}")
-    if _WALL_B:
-        _xb = {c: f"{float(poses[c]['C'][0]):.0f}" for c in _WALL_B}
-        print(f"  Wall B raw-X after:   {_xb}")
+    # ── Alignment validation table ───────────────────────────────────────────
+    _WALL_MEMBERSHIP = {}
+    for _gname, _gids in [("A", _WALL_A), ("B", _WALL_B),
+                           ("C", _WALL_C), ("D", _WALL_D),
+                           ("Gnd", _GROUND)]:
+        for _c in _gids:
+            _WALL_MEMBERSHIP.setdefault(_c, []).append(_gname)
+
+    print(f"\n  {'Cam':>4}  {'viewer_X':>9}  {'viewer_Y':>9}  {'viewer_Z':>9}  Groups")
+    print(f"  {'-'*4}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*20}")
+    for cid in sorted(cam_ids_s):
+        if cid in failed:
+            print(f"  {cid:>4}  {'(failed)':>9}")
+            continue
+        C  = poses[cid]["C"]
+        vx = float(C[0]); vy = float(C[2]); vz = float(-C[1])
+        mg = ",".join(_WALL_MEMBERSHIP.get(cid, ["-"]))
+        print(f"  {cid:>4}  {vx:>9.0f}  {vy:>9.0f}  {vz:>9.0f}  {mg}")
+
+    print()
+    _VAL_GROUPS = [
+        ("Wall A X", _WALL_A, lambda C: float(C[0])),
+        ("Wall B X", _WALL_B, lambda C: float(C[0])),
+        ("Wall C Y", _WALL_C, lambda C: float(C[2])),
+        ("Wall D Y", _WALL_D, lambda C: float(C[2])),
+        ("Ground Z", _GROUND, lambda C: float(-C[1])),
+    ]
+    for _gname, _gids, _fn in _VAL_GROUPS:
+        _gp = [c for c in _gids if c in placed_ids]
+        if len(_gp) < 2:
+            continue
+        _vals = [_fn(poses[c]["C"]) for c in _gp]
+        _std  = float(np.std(_vals))
+        _ids  = {c: f"{_fn(poses[c]['C']):.0f}" for c in _gp}
+        print(f"  {_gname}: std={_std:.0f} mm   {_ids}")
 
     save = {
         "reference_camera":      np.array([ca]),
@@ -1771,6 +1811,8 @@ for (let i=0; i<Math.min(5,VIEWER_FRAMES.length); i++)
   ALL_CAM_IDS.forEach(c => getImg(c,i));
 
 // ── Draw tile ─────────────────────────────────────────────────────────────────
+// Per-axis scaling: sx = tile_width / detection_width, sy = tile_height / detection_height
+// This ensures keypoints sit on the person regardless of tile aspect ratio.
 const KP_CONF_DRAW = 0.5;
 function drawCanvas(camId, vfi) {{
   const canvas = canvases[camId]; if(!canvas) return;
@@ -1778,18 +1820,18 @@ function drawCanvas(camId, vfi) {{
   const cw = canvas.offsetWidth||160, ch = canvas.offsetHeight||120;
   if (canvas.width!==cw||canvas.height!==ch){{canvas.width=cw;canvas.height=ch;}}
   const iw=IMG_DIMS.native_w, ih=IMG_DIMS.native_h;
-  const sc=Math.min(cw/iw,ch/ih), dw=iw*sc, dh=ih*sc;
-  const ox=(cw-dw)/2, oy=(ch-dh)/2;
+  // Per-axis scale factors: detection pixel coords → tile display coords
+  const sx=cw/iw, sy=ch/ih;
   const img = getImg(camId, vfi);
   function draw() {{
     ctx.fillStyle='#050515'; ctx.fillRect(0,0,cw,ch);
-    ctx.drawImage(img,ox,oy,dw,dh);
+    ctx.drawImage(img,0,0,cw,ch);   // stretch to fill tile (no black bars)
     const df = Math.max(0, Math.floor(vfi/DET_RATIO) + globalOffset + (camOffsets[camId]||0));
     const det = (DETECTIONS[df]||{{}})[camId]; if(!det) return;
     const b=det.b;
     ctx.strokeStyle='rgba(68,170,255,.7)';
     ctx.lineWidth=Math.max(1.5,cw*.003);
-    ctx.strokeRect(ox+b[0]*sc,oy+b[1]*sc,(b[2]-b[0])*sc,(b[3]-b[1])*sc);
+    ctx.strokeRect(b[0]*sx,b[1]*sy,(b[2]-b[0])*sx,(b[3]-b[1])*sy);
     if (!showSkel && !showKps) return;
     const kps=det.k;
     if (showSkel) {{
@@ -1797,8 +1839,8 @@ function drawCanvas(camId, vfi) {{
       for (const [a,b2] of SKEL_EDGES) {{
         if (kps[a][2]>=KP_CONF_DRAW && kps[b2][2]>=KP_CONF_DRAW) {{
           ctx.beginPath();
-          ctx.moveTo(ox+kps[a][0]*sc,oy+kps[a][1]*sc);
-          ctx.lineTo(ox+kps[b2][0]*sc,oy+kps[b2][1]*sc);
+          ctx.moveTo(kps[a][0]*sx,kps[a][1]*sy);
+          ctx.lineTo(kps[b2][0]*sx,kps[b2][1]*sy);
           ctx.strokeStyle='#00ff99'; ctx.stroke();
         }}
       }}
@@ -1808,7 +1850,7 @@ function drawCanvas(camId, vfi) {{
       for (let i=0;i<17;i++) {{
         if (kps[i][2]>=KP_CONF_DRAW) {{
           ctx.beginPath();
-          ctx.arc(ox+kps[i][0]*sc,oy+kps[i][1]*sc,r,0,2*Math.PI);
+          ctx.arc(kps[i][0]*sx,kps[i][1]*sy,r,0,2*Math.PI);
           ctx.fillStyle=(i<5)?'#ff8844':(i<11)?'#ffee44':'#44ffee';
           ctx.fill();
         }}

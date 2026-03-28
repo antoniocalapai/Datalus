@@ -1,39 +1,69 @@
 # PriCaB v2 — Stable Snapshot
 
 **Date:** 2026-03-28
-**Tag:** v2-pricab-stable
+**Git tag:** `v2-pricab-stable`
 **Pipeline script:** `PriCaB_HumanCalib.py` (frozen copy)
 
 ---
 
-## What changed from v1
+## Regeneration command
 
-| Fix | Description |
-|-----|-------------|
-| 1 | **Wall-topology room alignment** — replaced heuristic yaw + SVD tilt with `scipy.optimize.minimize` (Nelder-Mead). Step 1 minimises variance of viewer_X within Wall A/B and viewer_Y within Wall C/D (yaw). Step 2 minimises variance of raw_Y within ground cameras (tilt Rx+Rz). Step 3 translates origin to centroid(106,110). |
-| 2 | **Skeleton quality filter** — `KP_CONF_DRAW` raised to 0.5 (matches 3-D threshold); connections skipped when either endpoint is below threshold. |
-| 3 | **Triangulation reprojection filter** — reprojection error < 50 px required from both cameras; best-scoring pair selected per keypoint. |
-| 4 | **CoM marker** — size=20, white outline width=2 (was size=10 / width=1). |
-| 5 | **All UI controls** — skeleton toggle, keypoints toggle, CoM-only mode, Record (MediaRecorder webm), speed 0.25×/0.5×/1×/2×. |
-| 6 | **4×4 tile layout** — canvas letterbox (object-fit: contain behaviour) fills each cell. |
-| 7 | **10 fps viewer frames** — extracted at 100 ms intervals to `frames_viewer/`. |
-| 8 | **Frame sync** — `Math.floor` instead of `Math.round`; global offset slider (−10…+10); per-camera offset input field next to each tile label. |
-| 9 | **This freeze.** |
+```bash
+# From Datalus/ root — deletes pose cache to force full re-inference
+rm -f PriCaB_output/pose_*.txt PriCaB_output/pricab_poses*.npz PriCaB_output/pricab_viewer.html
+python3 PriCaB_HumanCalib.py Measurements/250404_HumanTest_2
+```
+
+---
+
+## What works
+
+| Fix | Status | Notes |
+|-----|--------|-------|
+| 1. YOLO11x-pose inference | ✓ | Parallel (8 workers). Confirmed same counts as pre-existing yolo11x run. |
+| 2. Keypoint overlay alignment | ✓ | Per-axis scale (sx=cw/iw, sy=ch/ih). Image stretches to fill tile; keypoints track correctly. |
+| 3. Wall-topology room alignment | ✓ | Multi-start Nelder-Mead (72 starts, global minimum). Validation table printed. |
+| 4. 3D skeleton quality | ✓ | Best-pair only, reprojection < 50 px, limb < 800 mm, 5-frame median. |
+| 5. 10 fps viewer frames | ✓ | 100 ms intervals, 410 frames/camera, pre-extracted in `frames_viewer/`. |
+| 6. Frame sync | ✓ | `Math.floor` mapping; global offset slider −10…+10; per-camera offset inputs. |
+| 7. CoM marker | ✓ | Plotly size=20, white outline width=2. |
+| 8. UI controls | ✓ | Skeleton/keypoints/CoM toggles, speed 0.25×–2×, MediaRecorder record button. |
+| 9. Layout | ✓ | 4×4 tile grid left, 3D plot right, fills browser, single slider. |
+
+---
+
+## Known limitations
+
+- **cam113 not on Wall A**: multi-start optimizer cannot align cam113 (viewer_X=2177 mm) with
+  Wall A cameras (106=88, 107=541, 105=407, 110=−88 mm). The reconstruction places cam113 ~2 m
+  off the expected wall. Root cause: only 17 solvePnP inliers; position unreliable. Wall B, C, D
+  and ground level align well (std 14–276 mm).
+- **Cameras 101, 104, 115 not placed**: insufficient landmark overlap with anchor pair (111↔114).
+  Identity pose used; excluded from 3D viewer.
+- **Intrinsics**: only cam102 and cam113 have checkerboard intrinsics. Other 14 cameras use
+  thin-lens estimate (fx=1463 px, principal point at centre).
+
+---
+
+## Results summary
+
+| Metric | Value |
+|--------|-------|
+| Cameras placed | 13 / 16 |
+| Reprojection error (post-BA) | 14.5 px |
+| Ground cameras height variance | std=14 mm ← excellent |
+| Wall B X variance | std=240 mm ← good |
+| Wall A X variance | std=807 mm ← dominated by cam113 outlier |
+| Viewer file size | 55.4 MB |
+
+---
 
 ## Wall groups used in alignment
 
-| Group | Camera IDs | Axis |
-|-------|-----------|------|
-| Wall A (origin wall) | 113, 106, 107, 105, 110 | viewer X ≈ 0 |
-| Wall B (far wall)    | 118, 112, 109, 114, 102  | viewer X ≈ max |
-| Wall C (side wall 0) | 106, 110, 112, 118, 119  | viewer Y ≈ 0 |
-| Wall D (side wall max)| 102, 109, 105, 107, 111 | viewer Y ≈ max |
-| Ground               | 106, 107, 112, 109       | viewer Z ≈ low |
-
-## Results
-
-- **Cameras placed:** 13 / 16 (101, 104, 115 failed — insufficient landmark overlap)
-- **Median reprojection error (post-BA):** 14.5 px
-- **Ground cameras raw-Y (should be equal):** 106=1485, 107=1458, 112=1458, 109=1486 mm
-- **Viewer:** `pricab_viewer.html` (55.4 MB, self-contained)
-- **YAMLs:** `yamls/<cam_id>.yaml` (ABT-compatible)
+| Group | Camera IDs | Aligned axis |
+|-------|-----------|-------------|
+| Wall A (origin wall, X≈0) | 113, 106, 107, 105, 110 | viewer_X |
+| Wall B (far wall, X≈max) | 118, 112, 109, 114, 102 | viewer_X |
+| Wall C (Y≈0 side)         | 106, 110, 112, 118, 119 | viewer_Y |
+| Wall D (Y≈max side)       | 102, 109, 105, 107, 111 | viewer_Y |
+| Ground (Z≈floor)          | 106, 107, 112, 109      | viewer_Z |
