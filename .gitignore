@@ -1,0 +1,28 @@
+# Large data folders — not tracked in git
+ABT_Software-main/
+BinaryData/
+CalibrationVideos/
+DatalusCalibration/
+Measurements/
+YOLOv9_Test/*.mp4
+
+# Logs and runtime artifacts
+run.log
+*.pt
+
+# Media
+*.mp4
+*.mov
+*.MOV
+*.MP4
+*.avi
+*.mkv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+PriCaB_output/frames/
+PriCaB_output/*.html
+.claude/
