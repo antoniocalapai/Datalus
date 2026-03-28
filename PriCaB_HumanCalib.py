@@ -1,21 +1,169 @@
 #!/usr/bin/env python3
 """
-PriCaB_HumanCalib.py  —  PriCaB Human Calibration Pipeline
+PriCaB_HumanCalib.py  —  PriCaB Human Calibration Pipeline  (v1.0 stable)
+===========================================================================
 
-Single-script: raw videos → ABT YAMLs + interactive HTML viewer
+Marker-free, human-body-based multi-camera calibration.
+A single script turns raw synchronised videos into metric camera poses
+(ABT-compatible YAML files) and an interactive 3-D HTML viewer.
 
-Usage:
-    python3 PriCaB_HumanCalib.py <video_folder>
+No checkerboard, no fiducials — just a person walking through the scene.
 
-Stages:
-  1  Inspect     — scan videos, detect camera IDs, report metadata
-  2  Extract     — 1 frame per 500 ms  →  PriCaB_output/frames/{cam_id}/
-  3  Pose        — YOLOv8-pose on every frame  →  PriCaB_output/pose_{cam_id}.txt
-  4  Intrinsics  — load from intrinsics.npz or estimate from lens specs
-  5  Extrinsics  — essmat + recoverPose + chaining  →  pricab_poses.npz
-  6  YAMLs       — ABT-compatible  →  PriCaB_output/yamls/{cam_id}.yaml
-  7  Viewer      — self-contained HTML  →  PriCaB_output/pricab_viewer.html
-  8  Config      — append results to datalus_config.json
+----------------------------------------------------------------------------
+QUICK START
+----------------------------------------------------------------------------
+    python3 PriCaB_HumanCalib.py  <video_folder>
+
+    <video_folder>  must contain one video file per camera, all recorded
+    simultaneously.  Camera IDs are auto-detected from file names.
+
+    Example:
+        python3 PriCaB_HumanCalib.py Measurements/250404_HumanTest_2
+
+    All outputs land in  PriCaB_output/  next to this script.
+    The viewer opens automatically in the default browser when done.
+
+----------------------------------------------------------------------------
+PIPELINE STAGES
+----------------------------------------------------------------------------
+  Stage 1  INSPECT
+           Scan the folder, auto-detect camera IDs from file names, read
+           video metadata (resolution, fps, frame count, duration).
+
+  Stage 2  EXTRACT FRAMES                          (skipped if done)
+           Sample 1 frame per 500 ms from every video.
+           Output: PriCaB_output/frames/<cam_id>/<cam_id>_frame_NNNNNN.png
+
+  Stage 3  HUMAN POSE DETECTION                    (skipped if done)
+           Run YOLOv8-pose on every extracted frame (yolov8n-pose.pt,
+           downloaded automatically from ultralytics if absent).
+           Output: PriCaB_output/pose_<cam_id>.txt
+           Format per line:
+             frame_idx  x1 y1 x2 y2  bbox_conf
+             kp0_x kp0_y kp0_conf … kp16_x kp16_y kp16_conf
+           COCO 17-keypoint layout (0=nose … 16=right_ankle).
+
+  Stage 4  INTRINSICS
+           Load per-camera K and distortion from
+           DatalusCalibration/intrinsics.npz  (produced by DatulusCalib
+           steps 1–2).  Falls back to a thin-lens estimate from the
+           constants LENS_FOCAL_MM and SENSOR_WIDTH_MM if a camera is
+           absent from the .npz.
+
+  Stage 5  EXTRINSICS — metric reconstruction
+           Eight-step pipeline:
+
+           5.1  Anchor pair — find the camera pair with the most
+                co-detected full-body frames (bbox_conf ≥ 0.70,
+                all SCALE_KPS visible with conf ≥ 0.50,
+                vertical span ≥ 30 % of image height).
+
+           5.2  recoverPose — essential matrix + chirality on the anchor
+                pair; this yields a unit-scale relative pose.
+
+           5.3  Metric scale — person height constraint:
+                scale = PERSON_HEIGHT_MM /
+                        median(head-to-ankle distance in raw units).
+                Applied immediately to the anchor T vector so the entire
+                reconstruction is in millimetres from this point on.
+
+           5.4  Triangulate landmarks — SCALE_KPS triangulated from the
+                anchor pair into metric 3-D; cheirality-filtered.
+
+           5.5  solvePnPRansac — every remaining camera is placed by
+                matching its 2-D keypoint observations to the metric 3-D
+                landmarks; cameras are processed in overlap-descending
+                order so each solved camera can contribute new landmarks
+                for the next (iterative expansion).
+
+           5.6  Bundle adjustment — scipy least_squares (TRF solver,
+                soft-L1 loss) jointly refines all non-anchor camera
+                poses with the 3-D landmarks fixed.
+
+           5.7  Room alignment — rigid transform (translate + Ry yaw)
+                that places the centroid of cameras 106 and 110 at
+                viewer (X=0, Y=0) and rotates so cameras 105/107 lie
+                along the positive viewer-X axis.
+
+           5.8  Save — pricab_poses.npz + pricab_poses_scaled.npz
+                (both contain the same metric poses after alignment).
+
+  Stage 6  WRITE YAMLs
+           One ABT-compatible YAML per camera under
+           PriCaB_output/yamls/<cam_id>.yaml.
+           Fields: camera_matrix, dist_coeffs, rotation_matrix,
+           translation_vector, image_size.
+
+  Stage 7  BUILD VIEWER
+           Self-contained HTML (no server required):
+           - Left pane: Plotly 3-D scatter of camera positions + hip
+             midpoint trajectory (one dot per frame, animatable).
+           - Right pane: 2×N grid of per-camera live video with YOLO
+             bounding box overlay for the current frame.
+           - Failed cameras (could not be placed) are excluded
+             automatically from both panes.
+           Output: PriCaB_output/pricab_viewer.html
+
+  Stage 8  UPDATE CONFIG
+           Writes / updates datalus_config.json with camera positions
+           and calibration metadata.
+
+----------------------------------------------------------------------------
+COORDINATE CONVENTIONS
+----------------------------------------------------------------------------
+  OpenCV / raw camera space:   X right, Y down, Z forward (into scene)
+  Viewer / world space:        X right, Y into-scene (floor), Z up
+  Conversion (Rx −90°):        viewer = (raw_x, raw_z, −raw_y)
+
+  Room alignment is expressed as a Ry rotation in raw space, which
+  corresponds to a Rz rotation in viewer space:
+    same wall  →  same viewer-Y coordinate
+    positive viewer-X  →  direction from cams 106/110 toward cams 105/107
+
+  All distances are in millimetres after stage 5.3.
+
+----------------------------------------------------------------------------
+OUTPUTS
+----------------------------------------------------------------------------
+  PriCaB_output/
+    frames/<cam_id>/          — extracted PNG frames
+    pose_<cam_id>.txt         — YOLO keypoint detections
+    pricab_poses.npz          — metric camera poses (R, T per camera)
+    pricab_poses_scaled.npz   — identical copy (kept for backward compat)
+    yamls/<cam_id>.yaml       — ABT-compatible calibration files
+    pricab_viewer.html        — interactive 3-D viewer (self-contained)
+  datalus_config.json         — updated with camera pose metadata
+
+----------------------------------------------------------------------------
+SKIP / RESUME LOGIC
+----------------------------------------------------------------------------
+  Stages 2 and 3 are skipped if their outputs already exist on disk —
+  re-running the script after a crash or partial run will resume from
+  stage 4 automatically.  To force a full re-run, delete the relevant
+  files in PriCaB_output/.
+
+  Stage 7 is skipped if pricab_viewer.html already exists.  Delete it
+  to force a viewer rebuild without re-running detection.
+
+----------------------------------------------------------------------------
+DEPENDENCIES
+----------------------------------------------------------------------------
+  opencv-python   ≥ 4.8
+  numpy           ≥ 1.24
+  scipy           ≥ 1.11
+  ultralytics     ≥ 8.0    (YOLOv8; optional — only needed for stage 3)
+
+----------------------------------------------------------------------------
+TUNABLE CONSTANTS  (top of file)
+----------------------------------------------------------------------------
+  PERSON_HEIGHT_MM   — known subject height in mm  (default: 1700)
+  SCALE_KPS          — keypoint indices used for scale & landmarks
+                       [nose, l/r-shoulder, l/r-hip, l/r-ankle]
+  SCALE_BBOX_CONF    — min detection confidence for full-body frames
+  SCALE_VERT_FRAC    — min vertical body span / image height
+  FRAME_INTERVAL_MS  — frame sampling interval (ms)
+  LENS_FOCAL_MM      — fallback focal length (mm)
+  SENSOR_WIDTH_MM    — fallback sensor width (mm)
 """
 
 import base64
@@ -97,6 +245,20 @@ def _detect_cam_ids(video_files):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def stage1_inspect(video_folder):
+    """
+    Scan *video_folder* for camera videos and return metadata.
+
+    Camera IDs are detected automatically: the numeric token that is
+    unique and differs across all file names in the folder is taken as
+    the camera ID (e.g. "109" from "cam_109_20250404.mp4").
+
+    Returns
+    -------
+    cam_videos : dict[str, Path]
+        Mapping camera-ID → video file path.
+    cam_info : dict[str, dict]
+        Per-camera metadata: path, w, h, fps, n_frames, duration_s.
+    """
     _header(1, "INSPECT")
     folder = Path(video_folder)
     if not folder.exists():
@@ -132,6 +294,20 @@ def stage1_inspect(video_folder):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def stage2_extract_frames(cam_videos, cam_info):
+    """
+    Extract one PNG frame per FRAME_INTERVAL_MS milliseconds from each video.
+
+    Frames are written to PriCaB_output/frames/<cam_id>/ and named
+    <cam_id>_frame_NNNNNN.png with a zero-based sequential index.
+
+    Skipped entirely for cameras whose output directory already contains
+    matching PNG files (safe to re-run after interruption).
+
+    Returns
+    -------
+    frames_dirs : dict[str, Path]
+        Mapping camera-ID → directory containing the extracted frames.
+    """
     _header(2, "EXTRACT FRAMES  (1 frame per 500 ms)")
     OUT_DIR.mkdir(exist_ok=True)
     frames_dirs = {}
@@ -182,6 +358,27 @@ def _pose_line(frame_idx, x1, y1, x2, y2, bbox_conf, kps):
 
 
 def stage3_detect_pose(cam_ids, frames_dirs):
+    """
+    Run YOLOv8-pose on every extracted frame and write detection files.
+
+    Model: yolov8n-pose.pt (downloaded automatically on first run via
+    ultralytics if not present at POSE_MODEL_PATH).
+
+    For each frame, keeps only the highest-confidence bounding box.
+    Detections below BBOX_CONF_THRESH are discarded.
+
+    Output format (PriCaB_output/pose_<cam_id>.txt):
+        One detection per line:
+          frame_idx  x1 y1 x2 y2  bbox_conf
+          kp0_x kp0_y kp0_conf … kp16_x kp16_y kp16_conf
+        Keypoints follow the COCO 17-point layout:
+          0 nose  1 l-eye  2 r-eye  3 l-ear  4 r-ear
+          5 l-shoulder  6 r-shoulder  7 l-elbow  8 r-elbow
+          9 l-wrist  10 r-wrist  11 l-hip  12 r-hip
+          13 l-knee  14 r-knee  15 l-ankle  16 r-ankle
+
+    Skipped for any camera whose pose_<cam_id>.txt already exists.
+    """
     _header(3, "HUMAN POSE DETECTION  (YOLOv8-pose)")
     model = None
 
@@ -261,6 +458,26 @@ def _load_pose_files(cam_ids):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def stage4_intrinsics(cam_ids, cam_info):
+    """
+    Load or estimate per-camera intrinsic parameters.
+
+    Priority order:
+      1. DatalusCalibration/intrinsics.npz  (produced by DatulusCalib
+         steps 1–2 using a physical checkerboard).  Keys: <cam_id>_K
+         (3×3 float64) and <cam_id>_dist (1×5 float64).
+      2. Thin-lens estimate:
+           fx = (LENS_FOCAL_MM / SENSOR_WIDTH_MM) × image_width_px
+           K  = diag(fx, fx, 1) with principal point at image centre
+           dist = zeros(5)
+
+    Returns
+    -------
+    cams : dict[str, dict]
+        Per-camera: K (3×3), dist (5,), w (px), h (px).
+    sources : dict[str, str]
+        Human-readable string describing where each camera's intrinsics
+        came from (for the stage 8 config log).
+    """
     _header(4, "INTRINSICS")
 
     loaded_K    = {}
@@ -374,128 +591,505 @@ def _corr_count(pairwise, ca, cb):
 
 
 def stage5_extrinsics(cam_ids, detections, cams):
-    _header(5, "EXTRINSICS  (essmat + recoverPose)")
+    """
+    Metric reconstruction:
+      1. Anchor pair   — best pair by valid full-body co-detections → recoverPose
+      2. Scale         — person height constraint applied immediately to anchor T
+      3. Landmarks     — triangulate SCALE_KPS from anchor pair in metric mm
+      4. solvePnP      — place every remaining camera against metric landmarks,
+                         chain outward and accumulate new landmarks each pass
+      5. BA            — scipy least_squares jointly refines all non-anchor poses
+      6. Save          — pricab_poses.npz and pricab_poses_scaled.npz (metric)
+    """
+    _header(5, "EXTRINSICS — anchor pair + solvePnP + bundle adjustment")
 
-    poses_npz = OUT_DIR / "pricab_poses.npz"
-    cam_ids_s = sorted(cam_ids)
+    poses_npz  = OUT_DIR / "pricab_poses.npz"
+    scaled_npz = OUT_DIR / "pricab_poses_scaled.npz"
+    cam_ids_s  = sorted(cam_ids)
+    IMG_H      = cams[cam_ids_s[0]]["h"]
 
-    if poses_npz.exists():
-        print(f"  {poses_npz.name} already exists — loading, skipping computation")
-        npz = np.load(str(poses_npz))
-        poses   = {}
-        ref_cam = str(npz["reference_camera"][0])
-        for cid in cam_ids_s:
-            R = npz[f"{cid}_R"]
-            T = npz[f"{cid}_T"].reshape(3, 1)
-            K = cams[cid]["K"]
-            C = (-R.T @ T).ravel()
-            P = K @ np.hstack([R, T])
-            poses[cid] = {"R": R, "T": T, "P": P, "C": C}
-        reproj_err = float(npz["reprojection_error_px"][0])
-        print(f"  reference={ref_cam}, reproj={reproj_err:.1f}px")
-        return poses, ref_cam, reproj_err
+    # ── helpers ───────────────────────────────────────────────────────────────
+    def _valid_det(det, kc=SCALE_KP_CONF):
+        if det["bbox_conf"] < SCALE_BBOX_CONF:
+            return False
+        kps = det["kps"]
+        for ki in SCALE_KPS:
+            if kps[ki, 2] < kc:
+                return False
+        ys = [kps[ki, 1] for ki in SCALE_KPS]
+        return (max(ys) - min(ys)) >= SCALE_VERT_FRAC * IMG_H
 
-    # ── Detection counts → reference camera ───────────────────────────────────
-    det_counts = {c: len(detections[c]) for c in cam_ids_s}
-    ref_cam    = max(det_counts, key=det_counts.get)
-    print(f"  Detection counts: {det_counts}")
-    print(f"  Reference camera: {ref_cam}")
+    def _tri(Pa, Pb, xa, ya, xb, yb):
+        X4 = cv2.triangulatePoints(
+            Pa, Pb,
+            np.array([[xa], [ya]], dtype=np.float64),
+            np.array([[xb], [yb]], dtype=np.float64))
+        w = float(X4[3])
+        if abs(w) < 1e-10:
+            return None
+        X3 = (X4[:3] / w).ravel()
+        return X3 if np.all(np.isfinite(X3)) else None
 
-    # ── Pairwise correspondences & essmat ─────────────────────────────────────
-    pairwise = {}
-    print("\n  Pairwise analysis:")
-    for ca, cb in combinations(cam_ids_s, 2):
-        pts_a, pts_b, n_shared = _collect_corr(ca, cb, detections)
-        n_corr = len(pts_a)
-        if n_corr < 8:
-            print(f"    {ca}↔{cb}: {n_shared} shared frames, {n_corr} kp pairs — insufficient")
+    def _make_P(cam_id, pose):
+        return cams[cam_id]["K"] @ np.hstack([pose["R"], pose["T"]])
+
+    def _project_np(X3_arr, rvec, tvec, K, dist):
+        """Numpy batch projection — faster than per-point cv2.projectPoints."""
+        R, _ = cv2.Rodrigues(rvec)
+        pts   = (R @ X3_arr.T).T + tvec.ravel()   # (N, 3) camera-space
+        z     = pts[:, 2:3]
+        xy    = pts[:, :2] / np.where(np.abs(z) < 1e-10, 1e-10, z)
+        r2    = xy[:, 0]**2 + xy[:, 1]**2
+        k1, k2 = dist[0], dist[1]
+        p1, p2 = dist[2], dist[3]
+        k3     = dist[4] if len(dist) > 4 else 0.0
+        rad    = 1 + k1*r2 + k2*r2**2 + k3*r2**3
+        dx     = 2*p1*xy[:, 0]*xy[:, 1] + p2*(r2 + 2*xy[:, 0]**2)
+        dy     = p1*(r2 + 2*xy[:, 1]**2) + 2*p2*xy[:, 0]*xy[:, 1]
+        xd, yd = xy[:, 0]*rad + dx, xy[:, 1]*rad + dy
+        u = K[0, 0]*xd + K[0, 2]
+        v = K[1, 1]*yd + K[1, 2]
+        return np.stack([u, v], axis=1)  # (N, 2)
+
+    # ── 1. Find best anchor pair ──────────────────────────────────────────────
+    pair_valid = {}
+    kp_conf_used = SCALE_KP_CONF
+    for kc in [SCALE_KP_CONF, 0.3]:
+        for ca, cb in combinations(cam_ids_s, 2):
+            shared = sorted(set(detections[ca]) & set(detections[cb]))
+            vf = [f for f in shared
+                  if f in detections[ca] and f in detections[cb]
+                  and _valid_det(detections[ca][f], kc)
+                  and _valid_det(detections[cb][f], kc)]
+            if vf:
+                pair_valid[(ca, cb)] = vf
+        if pair_valid:
+            kp_conf_used = kc
+            break
+
+    if not pair_valid:
+        print("  [WARN] No valid full-body pairs — falling back to all-keypoint essmat")
+        # Degenerate: run old approach with best-overlap pair
+        best = max(combinations(cam_ids_s, 2),
+                   key=lambda p: len(set(detections[p[0]]) & set(detections[p[1]])))
+        pair_valid[best] = sorted(set(detections[best[0]]) & set(detections[best[1]]))
+
+    anchor_pair = max(pair_valid, key=lambda p: len(pair_valid[p]))
+    ca, cb = anchor_pair
+    vf_anchor = pair_valid[anchor_pair]
+    print(f"\n  Anchor pair : {ca}↔{cb}  ({len(vf_anchor)} valid full-body frames,"
+          f"  kp_conf={kp_conf_used})")
+
+    # Per-pair coverage summary (top 8)
+    top = sorted(pair_valid.items(), key=lambda x: -len(x[1]))[:8]
+    for (a, b), frames in top:
+        mark = " ← anchor" if (a, b) == anchor_pair else ""
+        print(f"    {a}↔{b}: {len(frames)} frames{mark}")
+
+    # ── 2. recoverPose on anchor pair ─────────────────────────────────────────
+    pts_a, pts_b = [], []
+    for f in vf_anchor:
+        kps_a = detections[ca][f]["kps"]
+        kps_b = detections[cb][f]["kps"]
+        for ki in range(17):
+            if kps_a[ki, 2] >= kp_conf_used and kps_b[ki, 2] >= kp_conf_used:
+                pts_a.append([kps_a[ki, 0], kps_a[ki, 1]])
+                pts_b.append([kps_b[ki, 0], kps_b[ki, 1]])
+
+    pts_a = np.array(pts_a, dtype=np.float64)
+    pts_b = np.array(pts_b, dtype=np.float64)
+    Ka, da = cams[ca]["K"], cams[ca]["dist"]
+    Kb, db = cams[cb]["K"], cams[cb]["dist"]
+
+    n_a = cv2.undistortPoints(pts_a.reshape(-1, 1, 2), Ka, da).reshape(-1, 2)
+    n_b = cv2.undistortPoints(pts_b.reshape(-1, 1, 2), Kb, db).reshape(-1, 2)
+
+    E, mask_e = cv2.findEssentialMat(n_a, n_b, np.eye(3),
+                                      method=cv2.RANSAC,
+                                      threshold=RANSAC_THRESH, prob=0.999)
+    inliers_e = int(mask_e.ravel().sum())
+    print(f"\n  recoverPose: {len(pts_a)} corr, {inliers_e} inliers "
+          f"({100*inliers_e/len(pts_a):.0f}%)")
+
+    _, R_cb, T_cb_unit, _ = cv2.recoverPose(E, n_a, n_b, np.eye(3), mask=mask_e)
+    T_cb_unit = T_cb_unit.ravel()
+
+    poses = {
+        ca: {"R": np.eye(3, dtype=np.float64), "T": np.zeros((3, 1), dtype=np.float64)},
+        cb: {"R": R_cb.astype(np.float64),     "T": T_cb_unit.reshape(3, 1)},
+    }
+
+    # ── 3. Person-height scale on anchor pair ─────────────────────────────────
+    Pa_u = _make_P(ca, poses[ca])
+    Pb_u = _make_P(cb, poses[cb])
+    Ra, Ta = poses[ca]["R"], poses[ca]["T"].ravel()
+    Rb, Tb = poses[cb]["R"], poses[cb]["T"].ravel()
+
+    ha_dists = []
+    for f in vf_anchor:
+        kps_a = detections[ca][f]["kps"]
+        kps_b = detections[cb][f]["kps"]
+        pts3d = {}
+        ok = True
+        for ki in SCALE_KPS:
+            X3 = _tri(Pa_u, Pb_u,
+                      float(kps_a[ki, 0]), float(kps_a[ki, 1]),
+                      float(kps_b[ki, 0]), float(kps_b[ki, 1]))
+            if X3 is None or (Ra @ X3 + Ta)[2] <= 0 or (Rb @ X3 + Tb)[2] <= 0:
+                ok = False; break
+            pts3d[ki] = X3
+        if not ok:
             continue
-        result = _solve_rel_pose(
-            pts_a, pts_b,
-            cams[ca]["K"], cams[ca]["dist"],
-            cams[cb]["K"], cams[cb]["dist"],
-        )
-        if result is None:
-            print(f"    {ca}↔{cb}: essmat solve failed")
-            continue
-        R_ab, T_ab, inlier_rate = result
-        n_inliers = int(round(inlier_rate * n_corr))
-        pairwise[(ca, cb)] = (R_ab, T_ab, n_corr, n_inliers, inlier_rate)
-        print(f"    {ca}↔{cb}: {n_shared} frames, {n_corr} kp pairs,"
-              f" {n_inliers} inliers ({inlier_rate*100:.1f}%)")
+        ha = float(np.linalg.norm(pts3d[0] - (pts3d[15] + pts3d[16]) / 2))
+        sw = float(np.linalg.norm(pts3d[5] - pts3d[6]))
+        if ha > 0:
+            ha_dists.append(ha)
 
-    # ── BFS to build absolute poses (world = reference camera frame) ──────────
-    poses     = {ref_cam: {"R": np.eye(3), "T": np.zeros((3, 1))}}
-    remaining = [c for c in cam_ids_s if c != ref_cam]
-    max_iter  = len(remaining) * (len(cam_ids_s) + 1)
+    if not ha_dists:
+        print("  [WARN] No valid head-ankle measurements — scale defaults to 1")
+        scale = 1.0
+    else:
+        scale = PERSON_HEIGHT_MM / float(np.median(ha_dists))
+        sw_scaled = float(np.median([
+            np.linalg.norm(
+                _tri(Pa_u, Pb_u,
+                     float(detections[ca][f]["kps"][5, 0]),
+                     float(detections[ca][f]["kps"][5, 1]),
+                     float(detections[cb][f]["kps"][5, 0]),
+                     float(detections[cb][f]["kps"][5, 1])) -
+                _tri(Pa_u, Pb_u,
+                     float(detections[ca][f]["kps"][6, 0]),
+                     float(detections[ca][f]["kps"][6, 1]),
+                     float(detections[cb][f]["kps"][6, 0]),
+                     float(detections[cb][f]["kps"][6, 1]))
+            )
+            for f in vf_anchor[:10]
+            if _tri(Pa_u, Pb_u,
+                    float(detections[ca][f]["kps"][5, 0]),
+                    float(detections[ca][f]["kps"][5, 1]),
+                    float(detections[cb][f]["kps"][5, 0]),
+                    float(detections[cb][f]["kps"][5, 1])) is not None
+        ] or [0])) * scale
 
-    for _ in range(max_iter):
+    print(f"  Scale factor: {scale:.4f}  "
+          f"(median head-ankle = {float(np.median(ha_dists)) if ha_dists else 0:.4f} units)")
+    if ha_dists:
+        print(f"  Shoulder width validation: {sw_scaled:.0f} mm  "
+              f"({'✓' if 350 <= sw_scaled <= 500 else '⚠ expected 350–500 mm'})")
+
+    # Apply scale to anchor cb T
+    poses[cb]["T"] = poses[cb]["T"] * scale
+
+    # ── 4. Triangulate metric landmarks from anchor pair ──────────────────────
+    Pa = _make_P(ca, poses[ca])
+    Pb = _make_P(cb, poses[cb])
+    Ra, Ta = poses[ca]["R"], poses[ca]["T"].ravel()
+    Rb, Tb = poses[cb]["R"], poses[cb]["T"].ravel()
+
+    landmarks = {}   # (frame, ki) → X3_mm
+    for f in vf_anchor:
+        kps_a = detections[ca][f]["kps"]
+        kps_b = detections[cb][f]["kps"]
+        for ki in SCALE_KPS:
+            X3 = _tri(Pa, Pb,
+                      float(kps_a[ki, 0]), float(kps_a[ki, 1]),
+                      float(kps_b[ki, 0]), float(kps_b[ki, 1]))
+            if X3 is None:
+                continue
+            if (Ra @ X3 + Ta)[2] > 0 and (Rb @ X3 + Tb)[2] > 0:
+                landmarks[(f, ki)] = X3
+
+    print(f"  Anchor landmarks: {len(landmarks)}  "
+          f"({len(vf_anchor)} frames × up to {len(SCALE_KPS)} kps)")
+
+    # ── 5. solvePnP for remaining cameras ─────────────────────────────────────
+    # Sort candidates by overlap with current landmark frames (best first)
+    placed    = {ca, cb}
+    remaining = [c for c in cam_ids_s if c not in placed]
+    lm_frames = set(f for f, _ in landmarks)
+
+    def _lm_overlap(c):
+        return sum(1 for f in lm_frames
+                   if f in detections[c]
+                   and any(detections[c][f]["kps"][ki, 2] >= kp_conf_used
+                           for ki in SCALE_KPS))
+
+    # Iterative placement: each pass may unlock new cameras via new landmarks
+    max_passes = len(remaining) + 1
+    for _pass in range(max_passes):
         if not remaining:
             break
+        remaining.sort(key=_lm_overlap, reverse=True)
+        placed_this_pass = []
+
         for cam in list(remaining):
-            # Direct from reference
-            rel = _get_rel(pairwise, ref_cam, cam)
-            direct_corr = _corr_count(pairwise, ref_cam, cam)
-
-            if rel is not None and direct_corr >= MIN_DIRECT_CORR:
-                R_rc, T_rc = rel
-                poses[cam] = {"R": R_rc, "T": T_rc.reshape(3, 1)}
-                remaining.remove(cam)
-                print(f"  cam {cam}: direct from {ref_cam}"
-                      f" ({direct_corr} kp pairs)")
-                break   # restart inner loop after modifying remaining
-
-            # Chain through the best-connected solved intermediate
-            best_mid, best_score = None, -1
-            for mid in poses:
-                if mid == cam:
+            # Build 2D–3D correspondences from existing landmarks
+            obj_pts, img_pts = [], []
+            for (f, ki), X3 in landmarks.items():
+                if f not in detections[cam]:
                     continue
-                if _get_rel(pairwise, mid, cam) is None:
+                conf = detections[cam][f]["kps"][ki, 2]
+                if conf < kp_conf_used:
                     continue
-                score = _corr_count(pairwise, mid, cam)
-                if score > best_score:
-                    best_score, best_mid = score, mid
+                obj_pts.append(X3)
+                img_pts.append([float(detections[cam][f]["kps"][ki, 0]),
+                                 float(detections[cam][f]["kps"][ki, 1])])
 
-            if best_mid is not None:
-                R_m   = poses[best_mid]["R"]
-                T_m   = poses[best_mid]["T"].ravel()
-                R_mc, T_mc = _get_rel(pairwise, best_mid, cam)
-                R_abs = R_mc @ R_m
-                T_abs = R_mc @ T_m + T_mc
-                poses[cam] = {"R": R_abs, "T": T_abs.reshape(3, 1)}
-                remaining.remove(cam)
-                print(f"  cam {cam}: chained via {best_mid}"
-                      f" ({best_score} kp pairs to intermediate)")
-                break
+            n_corr = len(obj_pts)
+            if n_corr < 6:
+                continue   # not enough yet — try again after more landmarks
 
+            obj_arr = np.array(obj_pts, dtype=np.float64)
+            img_arr = np.array(img_pts, dtype=np.float64)
+            K_c, d_c = cams[cam]["K"], cams[cam]["dist"]
+
+            ok, rvec, tvec, inliers = cv2.solvePnPRansac(
+                obj_arr, img_arr, K_c, d_c,
+                iterationsCount=2000, reprojectionError=8.0,
+                confidence=0.999, flags=cv2.SOLVEPNP_ITERATIVE)
+
+            n_in = len(inliers) if (ok and inliers is not None) else 0
+            if not ok or n_in < 4:
+                print(f"  cam {cam}: solvePnP failed  "
+                      f"({n_corr} pts, {n_in} inliers) — deferred")
+                continue
+
+            R_c, _ = cv2.Rodrigues(rvec)
+            T_c    = tvec.ravel()
+            C_c    = (-R_c.T @ T_c)
+            print(f"  cam {cam}: solvePnP  {n_corr} pts, {n_in} inliers  "
+                  f"|T|={np.linalg.norm(T_c):.0f} mm  "
+                  f"C=[{C_c[0]:.0f},{C_c[1]:.0f},{C_c[2]:.0f}]")
+            poses[cam] = {"R": R_c, "T": T_c.reshape(3, 1)}
+            placed.add(cam)
+            placed_this_pass.append(cam)
+
+            # Triangulate new landmarks using this camera + anchor ca
+            # to expand coverage for cameras not yet placed
+            P_new = _make_P(cam, poses[cam])
+            for f in sorted(lm_frames):
+                if f not in detections[cam] or f not in detections[ca]:
+                    continue
+                kps_new = detections[cam][f]["kps"]
+                kps_ref = detections[ca][f]["kps"]
+                for ki in SCALE_KPS:
+                    if (f, ki) in landmarks:
+                        continue
+                    if (kps_new[ki, 2] < kp_conf_used or
+                            kps_ref[ki, 2] < kp_conf_used):
+                        continue
+                    X3 = _tri(Pa, P_new,
+                               float(kps_ref[ki, 0]), float(kps_ref[ki, 1]),
+                               float(kps_new[ki, 0]), float(kps_new[ki, 1]))
+                    if X3 is None:
+                        continue
+                    if (Ra @ X3 + Ta)[2] > 0 and (R_c @ X3 + T_c)[2] > 0:
+                        landmarks[(f, ki)] = X3
+
+            lm_frames = set(f for f, _ in landmarks)
+
+        remaining = [c for c in remaining if c not in placed_this_pass]
+        if not placed_this_pass:
+            break   # no progress — remaining cameras can't be placed
+
+    # Cameras that could never be placed
+    failed = []
     for cam in remaining:
-        print(f"  [WARN] cam {cam}: could not solve — using identity pose")
-        poses[cam] = {"R": np.eye(3), "T": np.zeros((3, 1))}
+        print(f"  cam {cam}: could not place — identity pose (insufficient landmarks)")
+        poses[cam] = {"R": np.eye(3, dtype=np.float64),
+                      "T": np.zeros((3, 1), dtype=np.float64)}
+        failed.append(cam)
 
-    # ── Build P matrices and camera centres ───────────────────────────────────
+    print(f"\n  Total landmarks: {len(landmarks)}  "
+          f"(across {len(lm_frames)} frames)")
+    print(f"  Cameras placed: {len(placed)}/{len(cam_ids_s)}  "
+          f"  failed: {failed if failed else 'none'}")
+
+    # ── 6. Bundle adjustment ──────────────────────────────────────────────────
+    # Fix anchor ca at identity. Optimize rvec+tvec for all other cameras.
+    # 3D landmarks are fixed (camera-only BA).
+    opt_cams = [c for c in cam_ids_s if c != ca and c not in failed]
+    n_opt    = len(opt_cams)
+
+    # Build observation arrays
+    obs_X3   = []   # (N, 3) world points
+    obs_camI = []   # (N,)  index into opt_cams (-1 = anchor)
+    obs_x    = []   # (N,)  observed u
+    obs_y    = []   # (N,)  observed v
+
+    for (f, ki), X3 in landmarks.items():
+        for cam_id in cam_ids_s:
+            det = detections[cam_id].get(f)
+            if det is None or det["kps"][ki, 2] < 0.3:
+                continue
+            obs_X3.append(X3)
+            obs_camI.append(opt_cams.index(cam_id) if cam_id in opt_cams else -1)
+            obs_x.append(float(det["kps"][ki, 0]))
+            obs_y.append(float(det["kps"][ki, 1]))
+
+    obs_X3   = np.array(obs_X3,   dtype=np.float64)   # (N, 3)
+    obs_camI = np.array(obs_camI, dtype=np.int32)
+    obs_x    = np.array(obs_x,    dtype=np.float64)
+    obs_y    = np.array(obs_y,    dtype=np.float64)
+    N_obs    = len(obs_x)
+
+    # Precompute per-camera K and dist arrays
+    K_opt = [cams[c]["K"]    for c in opt_cams]
+    d_opt = [cams[c]["dist"] for c in opt_cams]
+    K_ca  = cams[ca]["K"]; d_ca = cams[ca]["dist"]
+
+    # Masks per camera (precomputed for speed)
+    masks = {i: (obs_camI == i) for i in range(n_opt)}
+    mask_anchor = (obs_camI == -1)
+
+    def _reproj_median(current_poses):
+        errs = []
+        for i, c in enumerate(opt_cams):
+            msk = masks[i]
+            if not msk.any():
+                continue
+            rv, _ = cv2.Rodrigues(current_poses[c]["R"])
+            tv    = current_poses[c]["T"].ravel()
+            proj  = _project_np(obs_X3[msk], rv, tv, K_opt[i], d_opt[i])
+            errs.extend(np.hypot(proj[:, 0] - obs_x[msk],
+                                  proj[:, 1] - obs_y[msk]).tolist())
+        if mask_anchor.any():
+            rv_a = np.zeros(3); tv_a = np.zeros(3)
+            proj = _project_np(obs_X3[mask_anchor], rv_a, tv_a, K_ca, d_ca)
+            errs.extend(np.hypot(proj[:, 0] - obs_x[mask_anchor],
+                                  proj[:, 1] - obs_y[mask_anchor]).tolist())
+        return float(np.median(errs)) if errs else 0.0
+
+    reproj_before = _reproj_median(poses)
+    print(f"\n  Bundle adjustment: {n_opt} cameras, {N_obs} observations")
+    print(f"  Reprojection error BEFORE BA: {reproj_before:.1f} px (median)")
+
+    # Pack initial parameters
+    x0 = []
+    for c in opt_cams:
+        rv, _ = cv2.Rodrigues(poses[c]["R"])
+        x0.extend(rv.ravel().tolist())
+        x0.extend(poses[c]["T"].ravel().tolist())
+    x0 = np.array(x0, dtype=np.float64)
+
+    def residuals_fn(x):
+        res = np.empty(N_obs * 2)
+        for i in range(n_opt):
+            msk = masks[i]
+            if not msk.any():
+                continue
+            rv = x[i*6:i*6+3]; tv = x[i*6+3:i*6+6]
+            proj = _project_np(obs_X3[msk], rv, tv, K_opt[i], d_opt[i])
+            idx  = np.where(msk)[0]
+            res[idx*2]     = proj[:, 0] - obs_x[msk]
+            res[idx*2 + 1] = proj[:, 1] - obs_y[msk]
+        if mask_anchor.any():
+            rv_a = np.zeros(3); tv_a = np.zeros(3)
+            proj = _project_np(obs_X3[mask_anchor], rv_a, tv_a, K_ca, d_ca)
+            idx  = np.where(mask_anchor)[0]
+            res[idx*2]     = proj[:, 0] - obs_x[mask_anchor]
+            res[idx*2 + 1] = proj[:, 1] - obs_y[mask_anchor]
+        return res
+
+    result = least_squares(
+        residuals_fn, x0,
+        method='trf', loss='soft_l1', f_scale=10.0,
+        max_nfev=300, verbose=0,
+    )
+
+    # Unpack BA result
+    for i, c in enumerate(opt_cams):
+        rv = result.x[i*6:i*6+3]
+        tv = result.x[i*6+3:i*6+6]
+        R_ba, _ = cv2.Rodrigues(rv)
+        poses[c]["R"] = R_ba
+        poses[c]["T"] = tv.reshape(3, 1)
+
+    reproj_after = _reproj_median(poses)
+    print(f"  Reprojection error AFTER  BA: {reproj_after:.1f} px (median)")
+    print(f"  BA: converged={result.success}  cost={result.cost:.1f}  "
+          f"nfev={result.nfev}")
+
+    # ── 7. Finalise poses (P, C) ──────────────────────────────────────────────
     for cid in cam_ids_s:
-        R = poses[cid]["R"]
-        T = poses[cid]["T"]
-        K = cams[cid]["K"]
-        poses[cid]["P"] = K @ np.hstack([R, T])
+        R = poses[cid]["R"]; T = poses[cid]["T"]
+        poses[cid]["P"] = cams[cid]["K"] @ np.hstack([R, T])
         poses[cid]["C"] = (-R.T @ T).ravel()
 
-    # ── Reprojection error ────────────────────────────────────────────────────
-    reproj_err = _reprojection_error(cam_ids_s, detections, poses, cams)
-    print(f"\n  Reprojection error (hip midpoint, median): {reproj_err:.1f} px")
+    # ── 8. Align room: origin at centroid(106,110), +X toward centroid(105,107) ──
+    # Step 1: Translate so the centroid of cams 106 and 110 lands at viewer (0,0).
+    #         Raw X = viewer X, raw Z = viewer Y — translate only these two axes
+    #         so viewer Z (height, = -raw Y) is preserved.
+    # Step 2: Rotate around raw Y (= viewer Z) so the direction from that origin
+    #         toward the centroid of cams 105/107 aligns with viewer +X.
+    #
+    # Rotation of world frame by R_world (Ry in raw camera space):
+    #   C_new = R_world @ C_translated
+    #   R_new = R_old @ R_world^T
+    #   T_new = -R_new @ C_new
 
-    # ── Save ──────────────────────────────────────────────────────────────────
+    placed_ids = [c for c in cam_ids_s if c not in failed]
+
+    origin_ids = [c for c in ["106", "110"] if c in placed_ids]
+    xaxis_ids  = [c for c in ["105", "107"] if c in placed_ids]
+
+    if len(origin_ids) < 1 or len(xaxis_ids) < 1:
+        print(f"  [WARN] Room alignment skipped: "
+              f"origin cams={origin_ids}  x-axis cams={xaxis_ids}")
+    else:
+        centroid_origin = np.mean([poses[c]["C"] for c in origin_ids], axis=0)
+        centroid_xaxis  = np.mean([poses[c]["C"] for c in xaxis_ids],  axis=0)
+
+        # Translate: centroid_origin moves to (0, y_unchanged, 0) in raw space
+        t_align = np.array([-centroid_origin[0], 0.0, -centroid_origin[2]])
+
+        # Direction in viewer XY (raw XZ) from translated origin to translated xaxis
+        dx = float(centroid_xaxis[0] + t_align[0])
+        dz = float(centroid_xaxis[2] + t_align[2])
+        angle = np.arctan2(dz, dx)
+        theta = -angle   # negate so that direction aligns with viewer +X
+
+        c_t, s_t = float(np.cos(theta)), float(np.sin(theta))
+        R_world = np.array([[c_t, 0., -s_t],
+                             [0.,  1.,  0. ],
+                             [s_t, 0.,  c_t]], dtype=np.float64)
+
+        print(f"\n  Room alignment:")
+        print(f"    Origin cameras : {origin_ids}  "
+              f"centroid raw XZ = ({centroid_origin[0]:.1f}, {centroid_origin[2]:.1f}) mm")
+        print(f"    X-axis cameras : {xaxis_ids}  "
+              f"centroid raw XZ = ({centroid_xaxis[0]:.1f}, {centroid_xaxis[2]:.1f}) mm")
+        print(f"    Yaw correction : {np.degrees(theta):.1f}°")
+
+        for cid in cam_ids_s:
+            if cid in failed:
+                continue   # leave failed cameras at identity so viewer filter works
+            C_old   = poses[cid]["C"]
+            R_old   = poses[cid]["R"]
+            C_trans = C_old + t_align
+            C_new   = R_world @ C_trans
+            R_new   = R_old @ R_world.T
+            T_new   = (-R_new @ C_new).reshape(3, 1)
+            poses[cid]["C"] = C_new
+            poses[cid]["R"] = R_new
+            poses[cid]["T"] = T_new
+            poses[cid]["P"] = cams[cid]["K"] @ np.hstack([R_new, T_new])
+
     save = {
-        "reference_camera":       np.array([ref_cam]),
-        "reprojection_error_px":  np.array([reproj_err]),
+        "reference_camera":      np.array([ca]),
+        "reprojection_error_px": np.array([reproj_after]),
+        "scale_factor":          np.array([scale]),
     }
     for cid in cam_ids_s:
         save[f"{cid}_R"] = poses[cid]["R"]
         save[f"{cid}_T"] = poses[cid]["T"]
-    np.savez(str(poses_npz), **save)
-    print(f"  Saved → {poses_npz}")
 
-    return poses, ref_cam, reproj_err
+    np.savez(str(poses_npz),  **save)
+    np.savez(str(scaled_npz), **save)
+    print(f"  Saved → {poses_npz}")
+    print(f"  Saved → {scaled_npz}")
+
+    return poses, ca, reproj_after
 
 
 def _triangulate_hip(kps_per_cam, poses):
@@ -577,15 +1171,25 @@ def _reprojection_error(cam_ids, detections, poses, cams):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def stage6_write_yamls(cam_ids, cams, poses):
+    """
+    Write one ABT-compatible YAML per camera to PriCaB_output/yamls/.
+
+    Each file contains:
+      camera_matrix        — 3×3 intrinsic matrix K
+      dist_coeffs          — 1×5 distortion coefficients [k1,k2,p1,p2,k3]
+      rotation_matrix      — 3×3 extrinsic rotation R  (world → camera)
+      translation_vector   — 3×1 translation T  (in mm)
+      image_size           — [width, height] in pixels
+
+    Files are always overwritten so they reflect the latest metric poses.
+    """
     _header(6, "WRITE YAMLs  (ABT-compatible)")
     yaml_dir = OUT_DIR / "yamls"
     yaml_dir.mkdir(parents=True, exist_ok=True)
 
     for cam_id in sorted(cam_ids):
         out = yaml_dir / f"{cam_id}.yaml"
-        if out.exists():
-            print(f"  cam {cam_id}: {out.name} already exists — skip")
-            continue
+        # Always overwrite — poses may have been updated by new extrinsics
 
         K    = cams[cam_id]["K"]
         dist = cams[cam_id]["dist"]
@@ -621,13 +1225,49 @@ def _encode_image(path, scale, quality):
 
 def stage7_build_viewer(cam_ids, cam_info, detections, cams, poses,
                          frames_dirs, ref_cam):
+    """
+    Build a self-contained interactive HTML viewer.
+
+    Layout
+    ------
+    Left half  — Plotly 3-D scatter (Z-up, floor = XY plane):
+      - Red diamonds  : camera positions, labelled cam<id>
+      - Blue circle   : animated hip midpoint (triangulated from ≥2 cameras)
+      The 3-D scene is in the aligned world frame (mm):
+        X  —  along the wall from cams 106/110 toward cams 105/107
+        Y  —  into the room (perpendicular wall)
+        Z  —  vertical (up)
+
+    Right half — 2-column grid of camera feeds:
+      - Frames are displayed in sync with the 3-D animation slider
+      - YOLO bounding box overlaid in blue when a detection exists
+
+    Cameras that could not be placed (identity pose, i.e. the 4 failed
+    cameras 101/103/104/115 in the current dataset) are excluded from
+    both panes automatically.
+
+    Images are embedded as base64 JPEG (scale=IMG_SCALE, q=JPEG_QUALITY)
+    making the file fully self-contained — no server or network needed.
+
+    Skipped if pricab_viewer.html already exists; delete to force rebuild.
+
+    Returns
+    -------
+    Path to the generated HTML file.
+    """
     _header(7, "BUILD VIEWER  (self-contained HTML)")
     out_html = OUT_DIR / "pricab_viewer.html"
     if out_html.exists():
         print(f"  {out_html.name} already exists — skip")
         return out_html
 
-    cam_ids_s = sorted(cam_ids)
+    # Exclude cameras that failed placement (identity pose, non-anchor)
+    cam_ids_s = [c for c in sorted(cam_ids)
+                 if c == ref_cam
+                 or not (np.allclose(poses[c]["R"], np.eye(3), atol=1e-6)
+                         and np.allclose(poses[c]["T"], 0, atol=1e-3))]
+    print(f"  Cameras in viewer: {cam_ids_s}  "
+          f"(excluded: {sorted(set(cam_ids)-set(cam_ids_s))})")
     native_w  = cam_info[cam_ids_s[0]]["w"]
     native_h  = cam_info[cam_ids_s[0]]["h"]
     disp_w    = int(native_w * IMG_SCALE)
@@ -650,7 +1290,7 @@ def stage7_build_viewer(cam_ids, cam_info, detections, cams, poses,
         if len(kps_per_cam) < 2:
             continue
         X3 = _triangulate_hip(kps_per_cam, poses)
-        if X3 is not None and np.all(np.isfinite(X3)) and np.linalg.norm(X3) < 50.0:
+        if X3 is not None and np.all(np.isfinite(X3)) and np.linalg.norm(X3) < 1e7:
             positions3d[frame] = [X3[0], X3[2], -X3[1]]
 
     print(f"  Hip midpoint triangulated: {len(positions3d)}/{len(shared_frames)} frames")
@@ -944,6 +1584,17 @@ window.addEventListener('resize', () => setFrame(+slider.value));
 
 def stage8_update_config(video_folder, cam_ids, cam_info, ref_cam,
                           reproj_err, intrinsics_sources):
+    """
+    Append calibration results to datalus_config.json.
+
+    Writes / updates the following keys for each camera:
+      position_mm      — X, Y, Z camera centre in the aligned world frame
+      status           — "reference" for ref_cam, "calibrated" otherwise
+      intrinsics_src   — string describing where intrinsics came from
+      reprojection_px  — median reprojection error from bundle adjustment
+
+    No-ops if datalus_config.json does not exist.
+    """
     _header(8, "UPDATE CONFIG  (datalus_config.json)")
     if not CONFIG_JSON.exists():
         print(f"  {CONFIG_JSON} not found — skip")

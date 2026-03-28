@@ -96,19 +96,9 @@
       "118": "estimated (f=8.0mm lens, 11.2mm sensor \u2192 fx=1463px)",
       "119": "estimated (f=8.0mm lens, 11.2mm sensor \u2192 fx=1463px)"
     },
-    "reference_camera": "112",
-    "reprojection_error_px": "292.8",
+    "reference_camera": "109",
+    "reprojection_error_px": "19.3",
     "status": "DONE",
-    "timestamp": "2026-03-27 21:11",
-    "scale_recovery": {
-      "method": "person height normalization",
-      "person_height_mm": 1700.0,
-      "scale_factor": 9848.492625,
-      "samples_used": 54,
-      "median_triangulated_height_mm_before_scaling": 0.1726,
-      "median_triangulated_height_mm_after_scaling": 1700.0,
-      "shoulder_width_validation_mm": 459.3,
-      "status": "DONE"
-    }
+    "timestamp": "2026-03-28 10:15"
   }
 }
