@@ -123,7 +123,7 @@ def main():
     # ── Starting view (same as video) ────────────────────────────────────────
     ax.view_init(elev=25, azim=-55)
 
-    out = HERE / "figures" / "poster_cage.png"
+    out = HERE / "_figures" / "poster_cage.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=300, bbox_inches="tight")
     plt.close(fig)

@@ -40,7 +40,8 @@ run_summary.log
 
 # Large data artifacts (regenerable / re-downloadable)
 *.h5
-HomeCagePaper/data/
+HomeCagePaper/_data/
+HomeCagePaper/_figures/
 
 # Python
 __pycache__/

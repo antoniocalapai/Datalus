@@ -28,7 +28,7 @@ from _style import (                                        # noqa: E402
 )
 
 CURATED = HERE / "curated" / "master.h5"
-OUT_DIR = HERE / "figures" / "spatial"
+OUT_DIR = HERE / "_figures" / "spatial"
 TBL_DIR = HERE / "tables"  / "spatial"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 TBL_DIR.mkdir(parents=True, exist_ok=True)

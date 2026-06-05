@@ -29,7 +29,7 @@ from pathlib import Path
 
 # ─── Paths ──────────────────────────────────────────────────────────────────
 HERE     = Path(__file__).parent
-DATA_DIR = HERE / "data"
+DATA_DIR = HERE / "_data"
 CURATED  = HERE / "curated"
 CURATED.mkdir(parents=True, exist_ok=True)
 

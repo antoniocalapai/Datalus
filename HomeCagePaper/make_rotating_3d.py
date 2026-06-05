@@ -16,7 +16,7 @@ from _style import apply_style, PAL_WONG, ANIMALS, KEPT_KP_IDX, MM_TO_CM, ROOM_C
 apply_style()
 
 CURATED = HERE / "curated" / "master.h5"
-OUT     = HERE / "figures" / "spatial" / "rotating_3d.mp4"
+OUT     = HERE / "_figures" / "spatial" / "rotating_3d.mp4"
 
 FPS        = 30
 DURATION_S = 12       # one full rotation

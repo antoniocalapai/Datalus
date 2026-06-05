@@ -31,7 +31,7 @@ CLIPS = [
 SEPARATOR_FRAMES = 5            # 1 s blank separator between clips
 RECORDING_FPS = 5.0             # the cameras record at 5 fps
 OUT_FPS       = RECORDING_FPS
-OUT_FILE   = HERE / "figures" / "example_video.mp4"
+OUT_FILE   = HERE / "_figures" / "example_video.mp4"
 OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 CAMS = [102, 108, 113, 117]
@@ -59,14 +59,14 @@ ANIMAL_BGR = {
     "Jok": hex_to_bgr(PAL_WONG["Jok"]),   # orange
 }
 
-_RAW_DIR = HERE / "data" / "sessions" / SESSION / "RAW"
+_RAW_DIR = HERE / "_data" / "sessions" / SESSION / "RAW"
 VIDEOS = {
     102: _RAW_DIR / "July_2025__102_20250711151000.mp4",
     108: _RAW_DIR / "July_2025__108_20250711151000.mp4",
     113: _RAW_DIR / "July_2025__113_20250711151000.mp4",
     117: _RAW_DIR / "July_2025__117_20250711151000.mp4",
 }
-DETECTIONS_DIR = HERE / "data" / "sessions" / SESSION              # RT model
+DETECTIONS_DIR = HERE / "_data" / "sessions" / SESSION              # RT model
 ABT_DIR        = None                                              # no ABT for 250713
 
 

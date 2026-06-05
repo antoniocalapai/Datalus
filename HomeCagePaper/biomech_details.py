@@ -33,7 +33,7 @@ from _style import apply_style, W_DOUBLE, PAL_WONG, ANIMALS  # noqa: E402
 CURATED = HERE / "curated" / "master.h5"
 EVENTS  = HERE / "tables"  / "validation" / "biomech_events.csv"
 SUMMARY = HERE / "tables"  / "validation" / "biomech_summary.csv"
-OUT_DIR = HERE / "figures" / "biomech"
+OUT_DIR = HERE / "_figures" / "biomech"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 apply_style()

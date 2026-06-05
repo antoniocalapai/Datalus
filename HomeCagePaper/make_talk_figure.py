@@ -26,7 +26,7 @@ from _style import (apply_style, PAL_WONG, W_SINGLE,
 apply_style()
 
 CURATED  = HERE / "curated" / "master.h5"
-OUT_DIR  = HERE / "figures"
+OUT_DIR  = HERE / "_figures"
 VOXEL_CM = 25.0
 
 
