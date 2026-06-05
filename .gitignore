@@ -51,3 +51,6 @@ __pycache__/
 PriCaB_output/frames/
 PriCaB_output/*.html
 .claude/
+
+# Nested standalone repo (its own git history, pushed to GitLab)
+/Transform/
