@@ -1,0 +1,37 @@
+%YAML:1.0
+---
+intrinsicMatrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 1462.8571428571429, 0., 0., 0., 1462.8571428571429, 0., 1024.,
+       750., 1. ]
+distortionCoefficients: !!opencv-matrix
+   rows: 1
+   cols: 5
+   dt: d
+   data: [ 0., 0., 0., 0., 0. ]
+R: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+<<<<<<<< HEAD:PriCaB_SelfCalibration_Human/PriCaB_output/yamls/113.yaml
+   data: [ 0.99940424316362575, -0.026864747801672046,
+       0.021666658073940741, 0.018216392971687999, 0.94381021936113729,
+       0.32998550400977128, 0.029314190653018879, 0.32939422453199491,
+       -0.94373731677375383 ]
+========
+   data: [ -0.66786019216169301, -0.26910794140808147,
+       0.69393348355361206, 0.080188423615269636, 0.90090384233499765,
+       0.42654669566664771, -0.73995444484363004, 0.34051899027387927,
+       -0.58009847165719475 ]
+>>>>>>>> origin/main:versions/v2_pricab_stable/yamls/105.yaml
+T: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+<<<<<<<< HEAD:PriCaB_SelfCalibration_Human/PriCaB_output/yamls/113.yaml
+   data: [ 5126.3487960820476, 544.13188020306882, 1040.4264873263305 ]
+========
+   data: [ 6512.2144879221614, -1868.8189784756512, 4956.0150113003756 ]
+>>>>>>>> origin/main:versions/v2_pricab_stable/yamls/105.yaml

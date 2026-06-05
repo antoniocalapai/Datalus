@@ -1,0 +1,11 @@
+numpy>=1.24
+pandas>=2.0
+scipy>=1.11
+matplotlib>=3.7
+seaborn>=0.13
+tables>=3.8
+pyarrow>=14
+opencv-python>=4.8
+pyqt6>=6.6
+pyqtgraph>=0.13
+pyopengl>=3.1

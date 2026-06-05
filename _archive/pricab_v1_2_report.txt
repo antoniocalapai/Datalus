@@ -1,0 +1,764 @@
+================================================================================
+PriCaB — Primate Cognition and Behavior
+Full Development Report: Road to v1.2
+Prepared for: Strategic planning discussion with Claude Chat
+Author: A. Calapai (acalapai@dpz.eu) / Claude Sonnet 4.6
+Date: 2026-03-29
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+1. PROJECT CONTEXT
+────────────────────────────────────────────────────────────────────────────────
+
+PriCaB is a marker-free, human-body-based multi-camera calibration pipeline
+built at the Deutsches Primatenzentrum (DPZ), Göttingen. The goal is to
+calibrate an array of 16 ceiling and wall-mounted cameras inside a primate
+experimental cage without the use of any checkerboard or physical fiducials.
+
+Instead, a human technician walks through the empty cage while all cameras
+record simultaneously. The pipeline:
+  1. Detects the person's 2D body pose in every frame
+  2. Solves camera geometry from cross-view keypoint correspondences
+  3. Recovers metric scale from the known height of the person (1700mm)
+  4. Produces an interactive 3D HTML viewer and ABT-compatible YAML files
+
+The pipeline feeds into ABT (Animal Behavior Tracker), the broader software
+ecosystem for analyzing primate behavior using multi-camera 3D reconstruction.
+
+Hardware:
+  - 16 × Hikrobot MV-CH120-10GC cameras (Sony IMX304 sensor, 12 MP)
+  - 8mm C-mount lenses
+  - Resolution: 2048 × 1500 px (native, used at full res for calibration)
+  - Frame rate during calibration: 5 fps
+
+Camera layout:
+  - Cameras 105–107, 109–115 are wall/corner mounted at varying heights
+  - Cameras 101–104, 118, 119 cover specific angles
+  - The room is approximately rectangular; cameras surround all four walls
+  - Some cameras (101, 103, 104, 115) consistently fail placement due to
+    insufficient keypoint overlap — understood root cause (too few detections,
+    particularly cam103 which is believed mid-height and needs calibrated
+    intrinsics)
+
+Repository: /Users/acalapai/PycharmProjects/Datalus
+Main pipeline: PriCaB_HumanCalib.py
+Acquisition: PriCaB_Acquire.py
+Output: PriCaB_output/ (not git-tracked except for YAML files)
+
+
+────────────────────────────────────────────────────────────────────────────────
+2. COMPLETE VERSION HISTORY
+────────────────────────────────────────────────────────────────────────────────
+
+The pipeline was developed iteratively. Each version corresponds to a git
+commit and represents a discrete working milestone.
+
+  v1.0  — First stable release
+          Core calibration pipeline: inspect → extract → detect → intrinsics
+          → extrinsics → YAMLs → viewer → config.
+          Viewer was 2D only (Plotly scatter of camera positions + video strip).
+
+  v1.1  — Correct aspect ratio, 5fps playback, keypoint overlay in viewer
+          First attempt at overlaying YOLO bounding boxes on video frames.
+          Fixed aspect ratio of the per-camera video thumbnails.
+          Set playback speed to match actual acquisition rate (5Hz).
+
+  v1.2  — 3D keypoint skeleton with CoM/keypoints toggle in viewer
+          (NOTE: this was an early internal label — unrelated to the frozen
+          v1.2 stable release described in this document. The versioning
+          scheme was informal at this stage.)
+          Introduced first skeleton bones as lines in 2D video overlay.
+
+  v1.3  — Three.js 3D viewer with cylinder bones, CSS2D camera labels
+          Replaced Plotly with full Three.js scene.
+          Camera markers as red octahedra.
+          Skeleton bones as CylinderGeometry (r=18mm) connecting COCO keypoints.
+          CSS2DRenderer for floating camera ID labels.
+          OrbitControls for mouse navigation.
+
+  v1.4  — Orbit pivot at scene centroid, transparent room walls with edge outlines
+          Orbit target set to mean of placed camera positions (not origin).
+          Room walls added as transparent PlaneGeometry with visible edges.
+          Walls initially had an 800mm safety margin beyond camera extents.
+
+  v1.5  — Floor leveling: SVD pitch/roll correction from co-planar cameras
+          Key algorithmic addition: four cameras known to be at the same
+          physical height (106, 107, 109, 112) define the floor plane.
+          SVD is used to fit the best plane through these camera positions.
+          The entire reconstruction is then rotated so roll=0 and pitch=0
+          (physical floor is horizontal in the viewer coordinate system).
+          This corrects drift introduced by recoverPose which has no gravity
+          constraint.
+
+  v1.6  — X-axis mirror fix, 1m floor offset, head centroid sphere
+          Chirality fix: if cam106.x > cam107.x in the reconstructed frame,
+          the solution is mirrored and X is negated.
+          Floor grid placed 1000mm below the lowest camera (aesthetic).
+          Head keypoints (0–4: nose, eyes, ears) replaced by a single sphere
+          at their centroid — eliminates jitter from low-confidence face KPs.
+
+  v1.7  — Monitor layout, lower/upper camera rows, speed selector
+          Reorganised camera strip into two rows: lower cameras on bottom,
+          upper cameras on top (approximating physical layout).
+          Added playback speed selector: 0.4×, 0.6×, 1×, 1.5×, 2×.
+
+  v1.8  — Camera strip: 2 rows, bone plausibility filter
+          Bone plausibility: a bone is only rendered if both its endpoint
+          keypoints are within 700mm of at least one COCO neighbor.
+          Prevents wild stray bones from low-quality frames.
+
+  v1.9  — Robust triangulation, keypoint/head plausibility gate
+          3D triangulation switched to pairwise DLT from all camera pairs.
+          RANSAC inlier filter: discard any triangulation >300mm from the
+          median (across all pairs). Dramatically reduces outlier noise.
+          Keypoints gated: only rendered if ≥1 COCO neighbor is within 700mm.
+
+  ── v1.2 STABLE (frozen 2026-03-29, tag: v1.2-pricab-stable) ──────────────
+
+  The following four commits constitute the v1.2 stable release:
+
+  Commit 4b39e7e — PriCaB v1.2: info panel, acquisition script, wall snap,
+                   camera strip ordering
+
+  Commit 8bf3f7d — PriCaB v1.2: recording, CoM ellipses, full info panel,
+                   acquisition script fixes
+
+  Commit d7eb748 — Switch to YOLO26x-pose, compact run_summary.log,
+                   semitransparent CoM sphere
+
+  Commit 2f0b61d — PriCaB v1.2 final: fix screen recording
+                   (tag: v1.2-pricab-stable)
+
+
+────────────────────────────────────────────────────────────────────────────────
+3. WHAT WAS BUILT FOR v1.2 STABLE — DETAILED BREAKDOWN
+────────────────────────────────────────────────────────────────────────────────
+
+3.1  POSE MODEL UPGRADE: YOLOv8n → YOLO26x-pose
+─────────────────────────────────────────────────
+
+Previous model:  yolov8n-pose.pt  (6 MB, lightweight)
+New model:       yolo26x-pose.pt  (120 MB, Ultralytics v8.4.0 release asset)
+
+The YOLO26 model is the largest pose estimator in the Ultralytics family
+as of 2025. It uses a deeper backbone and significantly more parameters than
+the nano model used previously.
+
+Measured improvement on actual DPZ session data:
+  YOLOv8n-pose:  median reprojection error = 18.3 px
+  YOLO26x-pose:  median reprojection error = 14.0 px  (−23.5%)
+
+The model is downloaded automatically on first run via:
+    YOLO("yolo26x-pose.pt")
+and cached at: /Users/acalapai/PycharmProjects/Datalus/yolo26x-pose.pt
+
+The pose detection stage (Stage 3) is skipped if pose_<cam>.txt files
+already exist, so the model only runs once per session.
+
+Configuration (unchanged from prior versions):
+  - COCO 17-point keypoint layout
+  - bbox confidence threshold: 0.3
+  - keypoint confidence threshold: 0.5
+  - Sampling rate: 1 frame per 500ms (2 Hz)
+
+
+3.2  VIDEO ACQUISITION SCRIPT: PriCaB_Acquire.py
+──────────────────────────────────────────────────
+
+A new script was written from scratch to handle synchronised video recording
+using Hikrobot GigE cameras.
+
+Architecture:
+  - Uses Hikrobot MvCameraControl SDK (ABT_Software-main/utils/MvImport)
+  - Enumerates all connected GigE cameras via MV_CC_EnumDevices
+  - Reads camera ID from the "UserDefinedName" field (set in Hikrobot MVS client)
+    Falls back to last digits of serial number if field is empty
+  - Two threads per camera: grab thread (MV_CC_GetImageBuffer) + write thread
+    (cv2.VideoWriter), connected via a queue
+  - YUV422 → BGR conversion before encoding
+  - Output naming: Measurements/<session>/<session>_<cam_id>_<datetime>.mp4
+  - Files are directly compatible with PriCaB_HumanCalib.py
+
+Trigger modes:
+  - freerun (default): cameras run independently at specified FPS
+    Sync error ≈ 1/(2×fps), acceptable for 5fps calibration walks
+  - software: main thread fires MV_CC_SetCommandValue("TriggerSoftware")
+    to all cameras once per frame period — better sync, more CPU
+
+macOS-specific fix:
+  The MvCameraControl SDK Python bindings hardcode "libMvCameraControl.so"
+  (Linux path). On macOS, the library is a .dylib at different paths.
+  PriCaB_Acquire.py proactively preloads the dylib via ctypes before the SDK
+  import, trying three candidate paths:
+    /opt/MVS/lib/64/libMvCameraControl.dylib
+    /usr/local/lib/libMvCameraControl.dylib
+    libMvCameraControl.dylib  (system path fallback)
+
+Error handling fix:
+  ctypes.cdll.LoadLibrary raises OSError (not ImportError) when the library
+  is absent. Exception catch was widened to: except (ImportError, OSError)
+
+Usage:
+    python3 PriCaB_Acquire.py <session_name> --fps 5 --trigger freerun
+    Press Enter to stop cleanly (files are finalised).
+    Press Ctrl+C for emergency stop (files may be incomplete).
+
+
+3.3  CAMERA STRIP PERIMETER ORDERING
+──────────────────────────────────────
+
+Previously the camera strip at the bottom of the viewer showed cameras in
+arbitrary order (sorted by camera ID number). This made it hard to visually
+understand the spatial arrangement.
+
+Fix: sort cameras by their azimuthal angle around the room centroid.
+  - Compute centroid of all placed camera positions (floor-plane X, Y)
+  - For each camera, compute angle = atan2(dy, dx) from centroid
+  - Sort cameras by this angle
+
+Result: physically adjacent cameras are now adjacent in the strip, and corner
+cameras (the most extreme azimuthal angles) appear at the far left and far
+right edges of the strip. This matches the viewer's perimeter layout.
+
+Implementation (Python, inside stage7_build_viewer):
+    cx_floor = sum(cam_centres[c][0] for c in cam_ids_s) / len(cam_ids_s)
+    cy_floor = sum(cam_centres[c][1] for c in cam_ids_s) / len(cam_ids_s)
+    def _cam_angle(c):
+        dx = cam_centres[c][0] - cx_floor
+        dy = cam_centres[c][1] - cy_floor
+        return math.atan2(dy, dx)
+    cam_ids_s = sorted(cam_ids_s, key=_cam_angle)
+
+
+3.4  WALL SNAPPING (NO MARGIN)
+────────────────────────────────
+
+Previously room walls had an 800mm outward margin beyond the outermost cameras.
+The user requested walls be snapped exactly to the camera bounding box —
+"walls pass through the corner cameras".
+
+Fix: removed the MARGIN constant; walls are positioned exactly at:
+  xMin, xMax = min/max of camera X positions
+  yMin, yMax = min/max of camera Y positions
+  zMax = max of camera Z positions + 400mm (ceiling clearance only)
+
+The six transparent planes (four walls, floor, ceiling) are now flush with
+the extremes of the placed camera array. Corner cameras sit exactly on the
+wall surface.
+
+
+3.5  FULL INFO PANEL (7 SECTIONS)
+───────────────────────────────────
+
+The left info panel was expanded from a minimal display into a full 7-section
+structured panel that gives a complete calibration audit at a glance.
+
+Sections:
+  1. Recording
+       - Session name, frame rate (fps), duration, sensor resolution
+       - Total cameras / placed cameras / failed cameras
+
+  2. Pose Detection
+       - Model name (YOLO26x-pose), keypoints schema (COCO 17)
+       - Sampling rate (1 frame per 500ms), confidence thresholds
+       - Total frames used in calibration
+
+  3. Calibration
+       - Method: essential matrix + solvePnP + Bundle Adjustment
+       - Reference camera (anchor pair cam A)
+       - Reprojection error (median, px) — live value from BA output
+       - Person height assumption (1700mm)
+       - Scale factor (computed, mm/unit)
+       - Floor leveling cameras (106, 107, 109, 112)
+       - Yaw reference (centroid 106/110 → centroid 105/107)
+
+  4. 3D Reconstruction
+       - Triangulation method: pairwise DLT
+       - Inlier threshold: 300mm RANSAC
+       - Bone max length: 700mm plausibility gate
+       - Number of hip frames / skeleton frames
+
+  5. Cameras
+       - Per-camera table: ID | detection count | intrinsics source
+       - Intrinsics source = "calibrated" if loaded from DatalusCalibration/
+         intrinsics.npz, "estimated" if falling back to thin-lens formula
+
+  6. Live (live-updating)
+       - Frame index (current / total)
+       - Hip XYZ position in mm (CoM, live per frame)
+       - Number of cameras detecting in current frame
+       - Number of visible keypoints (n / 17)
+
+  7. Attribution
+       - Lab: Cognitive Ethology Lab, DPZ Göttingen
+       - Email: acalapai@dpz.eu
+
+The "Live" section is populated by the setFrame() JavaScript function which
+runs on every frame advance, slider scrub, and playback tick:
+    document.getElementById('li-frame').textContent = (idx+1)+' / '+FRAMES.length;
+    document.getElementById('li-hx').textContent = hip[0].toFixed(0)+' mm';
+    document.getElementById('li-nkps').textContent = nkps+' / 17';
+
+
+3.6  CoM MARKER: SEMITRANSPARENT SPHERE
+─────────────────────────────────────────
+
+The Centre of Mass (CoM) marker tracks the triangulated hip midpoint across
+all frames. Several designs were tried before settling on the final form:
+
+  Iteration 1: per-axis torus rings (user requested "three ellipses, one per
+               dimension") — TorusGeometry(1, 0.045, 8, 48) scaled to
+               trajectory spread on each axis. Technically implemented.
+
+  Iteration 2: user changed mind — reverted to a large semitransparent sphere.
+
+Final implementation:
+    const _comMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(220, 24, 16),
+        new THREE.MeshPhongMaterial({
+            color: 0x44aaff, emissive: 0x0a2244,
+            opacity: 0.30, transparent: true,
+            shininess: 80, depthWrite: false
+        })
+    );
+
+Properties:
+  - Radius: 220mm (visible but not obstructing)
+  - Color: blue (#44aaff) with dark blue emissive
+  - Opacity: 30% — skeleton is visible through it
+  - depthWrite: false — prevents z-fighting with skeleton bones
+  - Follows hip midpoint triangulation each frame
+  - Always visible (no toggle) — shown simultaneously with skeleton
+
+
+3.7  SCREEN RECORDING (MediaRecorder API)
+──────────────────────────────────────────
+
+A "Rec" button was added to the viewer that captures the entire reconstruction
+playback as a video file, saved locally in the user's browser.
+
+Technical approach:
+  - navigator.mediaDevices.getDisplayMedia() — captures the full browser tab
+  - MediaRecorder API — records the stream in chunks
+  - On stop: chunks are assembled into a Blob and downloaded via URL.createObjectURL
+
+MIME type strategy (Chrome reliability):
+    const mimeTypes = [
+        'video/webm;codecs=vp9',
+        'video/webm;codecs=vp8',
+        'video/webm',
+        'video/mp4;codecs=h264',
+        'video/mp4',
+    ];
+    const mime = mimeTypes.find(t => MediaRecorder.isTypeSupported(t)) || '';
+
+  Chrome reliably supports WebM. MP4 support via MediaRecorder is browser-
+  dependent and inconsistent. The list tries WebM first, falls back to MP4.
+
+Critical bug fixed:
+  Initial implementation used:
+      getDisplayMedia({ video: true, preferCurrentTab: true })
+  This caused the stream to be terminated IMMEDIATELY after the user selected
+  the tab — the recording started and stopped in under one second.
+
+  Root cause: preferCurrentTab:true is a non-standard Chrome hint that can
+  conflict with the tab-capture permission model, causing immediate revocation.
+
+  Fix: remove preferCurrentTab entirely.
+      getDisplayMedia({ video: { frameRate: 30 }, audio: false })
+  This presents the standard "share your screen/tab/window" dialog without
+  the immediate-close bug.
+
+Additional guard: download is only triggered if recChunks.length > 0,
+preventing an empty file being saved if the recording never started.
+
+Playback note: Chrome saves as .webm which is not natively playable on macOS.
+Workaround: ffmpeg -i recording.webm -c:v copy recording.mp4
+
+
+3.8  VIEWER HEADER
+────────────────────
+
+Top bar now displays:
+  Left:  "PriCaB — Primate Cognition and Behavior / Multi-camera 3D Pose Viewer"
+  Right: "acalapai@dpz.eu | YYYY-MM-DD" (build date injected at generation time)
+
+"Primate Cognition and Behavior" clarifies the PriCaB acronym (previously
+ambiguous: "Primate Cage Behaviour" was the prior reading).
+
+
+3.9  INFRASTRUCTURE CLEANUP: REMOVAL OF RUN LOGS
+──────────────────────────────────────────────────
+
+Previous approach: all calibration runs appended to DatalusCalibration/run.log
+and DatalusCalibration/run_summary.log. These were read at the start of each
+Claude conversation to provide context on the last pipeline run.
+
+Problem identified: reading the logs consumed significant context tokens even
+when the information was not needed. The logs grew unboundedly and became a
+token liability with no clear benefit over simply re-running the pipeline.
+
+Actions taken:
+  1. All run_summary.log writing code removed from PriCaB_HumanCalib.py
+  2. run.log and run_summary.log deleted from disk
+  3. .gitignore updated to exclude run_summary.log
+  4. Memory updated: session startup no longer reads logs
+
+Replacement strategy: when a version is frozen, write a detailed static
+documentation file (ver<N>_<M>.txt) at the project root. This is human-
+readable, version-specific, and does not grow unboundedly.
+
+
+────────────────────────────────────────────────────────────────────────────────
+4. CALIBRATION PIPELINE — TECHNICAL DEEP DIVE
+────────────────────────────────────────────────────────────────────────────────
+
+This section describes the full 8-stage pipeline as it stands in v1.2.
+
+STAGE 1 — INSPECT
+  Scan the video folder. Auto-detect camera IDs from filenames by finding the
+  numeric token that uniquely varies across files (position in the filename
+  that has a different value for each camera). Read video metadata: resolution,
+  fps, frame count, duration.
+
+STAGE 2 — EXTRACT FRAMES
+  Sample 1 frame per 500ms from each video (FRAME_INTERVAL_MS = 500).
+  Output: PriCaB_output/frames/<cam_id>/<cam_id>_frame_NNNNNN.png
+  Skipped if the frame directories already exist (resume logic).
+
+STAGE 3 — POSE DETECTION
+  Run YOLO26x-pose on every extracted frame.
+  Detection thresholds: bbox_conf ≥ 0.30, kp_conf ≥ 0.50
+  Output: PriCaB_output/pose_<cam_id>.txt
+  Format per detection (2 lines):
+    Line 1: frame_idx  x1 y1 x2 y2  bbox_conf
+    Line 2: kp0_x kp0_y kp0_conf ... kp16_x kp16_y kp16_conf
+  Skipped if pose_<cam>.txt already exists.
+
+STAGE 4 — INTRINSICS
+  Load per-camera K (camera matrix) and distortion coefficients from
+  DatalusCalibration/intrinsics.npz if available.
+  Fallback: thin-lens estimate using constants:
+    LENS_FOCAL_MM = 8.0  (C-mount lens)
+    SENSOR_WIDTH_MM = 11.2  (Sony IMX304 1.1" sensor)
+    fx = fy = focal_mm × image_width_px / sensor_width_mm
+    cx = image_width / 2, cy = image_height / 2
+    dist_coeffs = zeros
+
+STAGE 5 — EXTRINSICS (8 sub-steps)
+
+  5.1  Anchor pair selection
+       For all pairs of cameras, count the number of frames where both cameras
+       simultaneously detect a "full body" pose:
+         - bbox confidence ≥ 0.70 (SCALE_BBOX_CONF)
+         - All SCALE_KPS visible with confidence ≥ 0.50
+           SCALE_KPS = [0,5,6,11,12,15,16] (nose, shoulders, hips, ankles)
+         - Vertical body span ≥ 30% of image height (SCALE_VERT_FRAC)
+       The pair with the most qualifying co-detections becomes the anchor pair.
+
+  5.2  recoverPose on anchor pair
+       Build 2D-2D correspondences from matching frames.
+       Normalise by dividing by focal length (pixel → camera-space).
+       Compute essential matrix E via cv2.findEssentialMat (RANSAC).
+       Recover R and T (unit scale) via cv2.recoverPose.
+       Set cam_A as origin (R=I, T=0), cam_B at (R_cb, T_cb_unit).
+
+  5.3  Metric scale from person height
+       For each full-body frame in the anchor pair:
+         - Triangulate head keypoint (nose, kp0) and ankle keypoints (15, 16)
+         - Compute Euclidean 3D distance: head-to-ankle
+       scale = PERSON_HEIGHT_MM / median(all head-to-ankle distances)
+       Apply to T: T_metric = T_cb_unit × scale
+       All distances are now in millimetres.
+
+  5.4  Triangulate SCALE_KPS as metric 3D landmarks
+       Using the now-metric anchor pair (R_A=I, T_A=0, R_B, T_B_metric):
+       Triangulate SCALE_KPS from all qualifying frames.
+       Cheirality filter: keep only points with positive Z in both cameras.
+
+  5.5  solvePnP for remaining cameras
+       Cameras are sorted by overlap with already-placed cameras (descending).
+       For each unplaced camera:
+         - Find frames where this camera and any placed camera share landmarks
+         - Build 3D-2D correspondences
+         - cv2.solvePnPRansac (iterationsCount=2000, reprojectionError=8.0px)
+         - If successful: mark camera as placed and triangulate new landmarks
+           for its observations (iterative expansion)
+       Cameras that fail solvePnP are marked "failed" and excluded from viewer.
+
+  5.6  Bundle adjustment
+       scipy.optimize.least_squares with TRF solver and soft-L1 loss.
+       Optimises: all non-anchor camera poses (rotation as Rodrigues + T vector)
+       Fixes: 3D landmarks (held constant)
+       Minimises: reprojection residuals (2D pixel distances)
+       Reports median reprojection error before and after BA.
+
+  5.7  Room alignment
+       Two-step rigid transform:
+
+       Yaw alignment:
+         - Reference vector: centroid(cam106, cam110) → centroid(cam105, cam107)
+         - Rotate entire scene so this vector aligns with +viewer-X axis
+
+       Floor leveling:
+         - Cameras 106, 107, 109, 112 are known to be at the same physical height
+         - Fit a plane to their 3D positions via SVD of (positions − centroid)
+         - Compute rotation that maps this plane's normal to +Z (up)
+         - Apply roll+pitch correction to all cameras
+
+       This step is critical: recoverPose has no gravity constraint and produces
+       arbitrary orientation. Floor leveling ensures physical "up" = viewer Z.
+
+  5.8  Chirality fix
+       Expected: cam106 should be at lower viewer-X than cam107 (opposite wall).
+       If the reconstruction is mirrored (cam106.x > cam107.x), negate all X
+       coordinates and flip the X column of all rotation matrices.
+
+STAGE 6 — WRITE YAMLs
+  One YAML per camera under PriCaB_output/yamls/<cam_id>.yaml
+  ABT convention: stores K^T and R^T (ABT transposes internally); T as-is.
+  OpenCV FileStorage format with !!opencv-matrix tags.
+  All 16 cameras get a YAML (failed cameras too — they retain identity pose).
+
+STAGE 7 — BUILD VIEWER
+  Self-contained single HTML file (~42MB, all images base64 embedded).
+  No external server required — open directly in browser.
+  Technology: Three.js r0.160.0 (ES modules via importmap from CDN).
+  Full viewer description in section 5 below.
+
+STAGE 8 — UPDATE CONFIG
+  Writes/updates datalus_config.json with:
+  - Camera positions (3D XYZ in mm)
+  - Which cameras were placed vs failed
+  - Reprojection error
+  - Scale factor
+  - Calibration metadata (session name, date, model used)
+
+
+────────────────────────────────────────────────────────────────────────────────
+5. INTERACTIVE 3D VIEWER — TECHNICAL DEEP DIVE
+────────────────────────────────────────────────────────────────────────────────
+
+5.1  Layout Structure
+  Top bar:      Title, email (acalapai@dpz.eu), build date
+  Left panel:   Info panel (240px fixed width, 7 sections, live-updating)
+  Centre:       Three.js 3D scene (fills remaining width)
+  Bottom strip: Camera feed strip (2 rows, sorted by azimuthal angle)
+  Bottom bar:   Playback controls
+
+5.2  3D Scene — Coordinate System
+  Physical world:  X along 106/110→105/107 wall, Y depth, Z height (up)
+  Viewer space:    Same X, same Y, Z up
+  Conversion from OpenCV camera space (X right, Y down, Z forward):
+    viewer_x = raw_x
+    viewer_y = raw_z
+    viewer_z = -raw_y
+
+5.3  3D Scene — Objects
+  Camera markers:  Red octahedra (r=140mm), one per placed camera
+                   CSS2D floating label shows camera ID
+
+  Skeleton:        COCO 17-point, CylinderGeometry bones (r=18mm)
+                   Head keypoints 0-4 replaced by single sphere at centroid
+                   Bones only drawn if both endpoints pass plausibility:
+                     - Endpoint must have ≥1 COCO neighbor within 700mm
+
+  CoM sphere:      Semitransparent blue sphere (r=220mm, opacity=30%)
+                   Follows triangulated hip midpoint each frame
+                   Always visible alongside skeleton
+
+  Room walls:      6 transparent PlaneGeometry planes
+                   Snapped exactly to camera bounding box (no margin)
+                   Ceiling has +400mm clearance
+
+  Floor:           THREE.GridHelper at min(camera_Z) − 1000mm
+
+  Lighting:        AmbientLight + DirectionalLight (from above)
+
+5.4  3D Reconstruction (computed by Python, embedded in HTML as JSON)
+  Hip midpoint:    All camera pairs triangulate the hip midpoint via DLT
+                   RANSAC filter: discard results >300mm from median
+                   Result: robust per-frame 3D hip position
+
+  All 17 KPs:      Same procedure per keypoint, per frame
+
+  Plausibility:    A keypoint is rendered only if ≥1 COCO neighbor is within
+                   700mm (eliminates stray triangulations from bad 2D matches)
+
+5.5  Playback Controls
+  Speed selector:  0.4× / 0.6× / 1× / 1.5× / 2× (relative to 5Hz acquisition)
+  Slider:          Scrub to any frame
+  Bones button:    Toggle skeleton connector visibility
+  Rec button:      MediaRecorder screen capture → download as .webm/.mp4
+
+5.6  Camera Strip
+  Bottom of viewer, 2 rows
+  Sorted by azimuthal angle around room centroid
+  Physically adjacent cameras appear adjacent in strip
+  Corner cameras appear at strip edges
+  Each cell: live video playback + YOLO bounding box overlay for current frame
+
+
+────────────────────────────────────────────────────────────────────────────────
+6. CALIBRATION RESULTS — v1.2
+────────────────────────────────────────────────────────────────────────────────
+
+Session tested:     DPZ experimental cage, 16-camera array
+Cameras available:  16 (IDs: 101–107, 109–115, 118, 119)
+Cameras placed:     12/16
+Failed cameras:     101, 103, 104, 115
+
+Failure analysis:
+  - 101, 104, 115: Insufficient keypoint overlap with the main cluster.
+                   The anchor pair and the first solvePnP cameras cover the
+                   central room volume. These cameras see angles too different
+                   from any already-placed camera to find enough 3D-2D matches.
+  - 103:           Believed to be a mid-height camera on the 106/107 wall.
+                   Only 46 detections total. No solvePnP inliers.
+                   Hypothesis: needs calibrated intrinsics (currently using
+                   thin-lens estimate which may be significantly wrong).
+
+Reprojection error:
+  - Before bundle adjustment:  ~20–25 px (typical)
+  - After bundle adjustment:   14.0 px (median) — with YOLO26x-pose
+
+The 14.0px result represents a 23.5% improvement over the 18.3px achieved
+with yolov8n-pose. The remaining error is attributed to:
+  a) Estimated intrinsics (cameras not in DatalusCalibration/intrinsics.npz)
+  b) Person height assumption fixed at 1700mm (actual height may differ)
+  c) Temporal sync errors (freerun mode, ±100ms at 5fps)
+
+
+────────────────────────────────────────────────────────────────────────────────
+7. KNOWN LIMITATIONS AND OPEN PROBLEMS
+────────────────────────────────────────────────────────────────────────────────
+
+7.1  Four consistently failing cameras (101, 103, 104, 115)
+  These cameras have never been successfully placed in any tested session.
+  Root cause: insufficient keypoint landmark overlap between these cameras
+  and the successfully placed cluster.
+
+  Camera 103 is of particular interest — it is believed to be the top/mid
+  camera providing overhead coverage. If placed, it would significantly improve
+  3D reconstruction quality for objects near the top of the cage.
+
+  Potential fixes:
+    (a) Calibrate intrinsics for these cameras specifically
+        (DatalusCalibration currently covers only some of the 16 cameras)
+    (b) Run a dedicated walk that specifically covers the overlap zone between
+        the failing cameras and the placed cameras
+    (c) Use a different reference object (checkerboard) for just the failing
+        cameras and stitch into the solution
+
+7.2  Reprojection error of 14.0 px
+  This is good but not ideal for sub-centimetre 3D tracking.
+  For comparison, a well-calibrated checkerboard system would yield 0.5–2px.
+  The key bottleneck is estimated intrinsics. If all 16 cameras had calibrated
+  intrinsics (full DatalusCalibration), reprojection could improve substantially.
+
+7.3  Person height assumption (1700mm fixed)
+  Scale is derived by assuming the calibration walker is exactly 1700mm tall.
+  Real person heights vary. A 1% error in person height = 1% scale error
+  across all 3D positions. If the walker is 1750mm, all metric distances
+  will be 2.8% too small.
+
+  Mitigation: measure the actual walker's height before each calibration session
+  and update PERSON_HEIGHT_MM accordingly.
+
+7.4  Temporal sync in freerun mode
+  PriCaB_Acquire.py freerun mode starts all cameras at approximately the same
+  time but does not enforce frame-level sync. At 5fps, sync error ≈ ±100ms.
+  Calibration correspondence uses frame index as a proxy for time — this
+  introduces small errors in cross-camera keypoint matching.
+
+  The software trigger mode reduces this but does not eliminate it.
+  True hardware sync would require a trigger signal generator.
+
+7.5  Screen recording saves as .webm (Chrome)
+  Chrome's MediaRecorder produces .webm files which macOS cannot natively play.
+  Convert: ffmpeg -i recording.webm -c:v copy recording.mp4
+  Safari produces .mp4 directly but is less commonly used.
+
+7.6  Camera strip format
+  The two-row strip sorts cameras by azimuth but the row assignment (top/bottom)
+  is a simple even/odd split of the sorted list, not a true upper/lower camera
+  height assignment. This may not match the physical layout perfectly for all
+  camera configurations.
+
+
+────────────────────────────────────────────────────────────────────────────────
+8. FILE STRUCTURE (v1.2)
+────────────────────────────────────────────────────────────────────────────────
+
+/Users/acalapai/PycharmProjects/Datalus/
+│
+├── PriCaB_HumanCalib.py          Main calibration pipeline (~2500 lines)
+├── PriCaB_Acquire.py             Video acquisition script (Hikrobot cameras)
+├── ver1_2.txt                    Version documentation (release notes)
+├── pricab_v1_2_report.txt        This file
+├── datalus_config.json           Auto-updated after each calibration run
+├── CLAUDE.md                     Project config for Claude
+├── .gitignore                    Excludes large media, model weights, outputs
+│
+├── DatalusCalibration/           (not git-tracked)
+│   └── intrinsics.npz            Per-camera K and distortion (from checkerboard)
+│
+├── Measurements/                 (not git-tracked)
+│   └── <session_name>/           One folder per calibration session
+│       └── <session>_<cam>_<datetime>.mp4
+│
+├── PriCaB_output/                (partially git-tracked)
+│   ├── yamls/                    Per-camera YAML files (git-tracked)
+│   │   └── <cam_id>.yaml         ABT-compatible calibration
+│   ├── frames/                   (not git-tracked)
+│   │   └── <cam_id>/             Extracted PNG frames
+│   ├── pose_<cam_id>.txt         YOLO detections (not git-tracked)
+│   ├── pricab_poses.npz          Raw camera poses
+│   ├── pricab_poses_scaled.npz   Metric camera poses
+│   └── pricab_viewer.html        Interactive viewer (not git-tracked)
+│
+├── versions/
+│   └── v2_pricab_stable/         Archived frames and pose files from earlier run
+│
+└── yolo26x-pose.pt               Pose model (not git-tracked, 120MB)
+
+
+────────────────────────────────────────────────────────────────────────────────
+9. DEPENDENCIES
+────────────────────────────────────────────────────────────────────────────────
+
+Python:
+    opencv-python >= 4.8
+    numpy >= 1.24
+    scipy >= 1.11
+    ultralytics >= 8.0  (for YOLO26x-pose, downloads model on first run)
+
+JavaScript (CDN, no install):
+    three@0.160.0  — Three.js core
+    OrbitControls  — mouse navigation
+    CSS2DRenderer  — floating camera labels
+
+Hardware SDK (acquisition only):
+    Hikrobot MVS SDK — libMvCameraControl.so (Linux) or .dylib (macOS)
+
+
+────────────────────────────────────────────────────────────────────────────────
+10. GIT TAG AND COMMIT REFERENCE
+────────────────────────────────────────────────────────────────────────────────
+
+Tag:    v1.2-pricab-stable
+Commit: 2f0b61d0b910668714ee49955b8968e1c1bb33c8
+Branch: main
+Date:   2026-03-29
+
+v1.2 commits (in chronological order):
+  4b39e7e  info panel, acquisition script, wall snap, camera strip ordering
+  8bf3f7d  recording, CoM ellipses, full info panel, acquisition script fixes
+  d7eb748  YOLO26x-pose switch, semitransparent CoM sphere
+  2f0b61d  fix screen recording (remove preferCurrentTab), WebM fallback
+
+
+================================================================================
+END OF REPORT — PriCaB v1.2
+================================================================================

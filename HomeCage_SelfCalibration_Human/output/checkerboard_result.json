@@ -1,0 +1,83 @@
+{
+  "session": "250708",
+  "method": "checkerboard",
+  "stereo_pair": [
+    "102",
+    "113"
+  ],
+  "n_simultaneous_frames": 34,
+  "stereo_reproj_px": 20.01,
+  "distance_measured_mm": 1581.5,
+  "distance_gt_mm": 3269.6,
+  "distance_error_mm": 1688.1,
+  "intrinsics": {
+    "102": {
+      "fx": 1186.2,
+      "fy": 1179.3,
+      "cx": 994.3,
+      "cy": 750.3,
+      "reproj_px": 1.24,
+      "n_boards": 50
+    },
+    "108": {
+      "fx": 1222.3,
+      "fy": 1213.0,
+      "cx": 987.2,
+      "cy": 770.4,
+      "reproj_px": 1.31,
+      "n_boards": 51
+    },
+    "113": {
+      "fx": 1067.5,
+      "fy": 1088.5,
+      "cx": 1100.7,
+      "cy": 777.7,
+      "reproj_px": 4.33,
+      "n_boards": 43
+    },
+    "117": {
+      "fx": 1022.6,
+      "fy": 1041.4,
+      "cx": 1025.4,
+      "cy": 768.2,
+      "reproj_px": 2.97,
+      "n_boards": 5
+    }
+  },
+  "cameras": {
+    "102": {
+      "placed": true,
+      "reconstructed_aligned_mm": [
+        300.0,
+        3260.0,
+        540.0
+      ],
+      "known_mm": [
+        300.0,
+        3260.0,
+        540.0
+      ],
+      "error_mm": 0.0
+    },
+    "113": {
+      "placed": true,
+      "reconstructed_aligned_mm": [
+        179.1,
+        1683.1,
+        544.8
+      ],
+      "known_mm": [
+        50.0,
+        0.0,
+        550.0
+      ],
+      "error_mm": 1688.1
+    },
+    "108": {
+      "placed": false
+    },
+    "117": {
+      "placed": false
+    }
+  }
+}

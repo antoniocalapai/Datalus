@@ -1,0 +1,71 @@
+# Datalus — Project Configuration for Claude
+
+## Calibration Pipeline Inputs
+
+### Calibration Videos (2 sessions, 4 cameras each)
+```
+SESSION_250707:
+  CAM_102 = "/Users/acalapai/PycharmProjects/Datalus/_data/CalibrationVideos/250707/Calibration_4_102_20250707154928.mp4"
+  CAM_108 = "/Users/acalapai/PycharmProjects/Datalus/_data/CalibrationVideos/250707/Calibration_4_108_20250707154928.mp4"
+  CAM_113 = "/Users/acalapai/PycharmProjects/Datalus/_data/CalibrationVideos/250707/Calibration_4_113_20250707154928.mp4"
+  CAM_117 = "/Users/acalapai/PycharmProjects/Datalus/_data/CalibrationVideos/250707/Calibration_4_117_20250707154928.mp4"
+
+SESSION_250708:
+  CAM_102 = "/Users/acalapai/PycharmProjects/Datalus/_data/CalibrationVideos/250708/_2_102_20250708161657.mp4"
+  CAM_108 = "/Users/acalapai/PycharmProjects/Datalus/_data/CalibrationVideos/250708/_2_108_20250708161657.mp4"
+  CAM_113 = "/Users/acalapai/PycharmProjects/Datalus/_data/CalibrationVideos/250708/_2_113_20250708161657.mp4"
+  CAM_117 = "/Users/acalapai/PycharmProjects/Datalus/_data/CalibrationVideos/250708/_2_117_20250708161657.mp4"
+```
+
+### ABT Codebase
+```
+ABT_ROOT = "/Users/acalapai/PycharmProjects/Datalus/_docs/ABT_Software-main"                  # root directory of the ABT repo
+ABT_3D_TRANSFORM_MODULE = "/Users/acalapai/PycharmProjects/Datalus/_docs/ABT_Software-main/Modules_3D"   # path to the 3D Transformation module file(s)
+```
+
+### Example YAML File
+```
+EXAMPLE_YAML = ""              # path to an existing camera calibration YAML consumed by ABT
+```
+
+### World Registration CSV
+```
+WORLD_REGISTRATION_CSV = "/Users/acalapai/PycharmProjects/Datalus/_data/DatalusCalibration"    # path to CSV with columns: name, colmap_x, colmap_y, colmap_z, real_x_mm, real_y_mm, real_z_mm
+```
+
+### Output Directory
+```
+CALIBRATION_OUTPUT_DIR = "/Users/acalapai/PycharmProjects/Datalus/_data/DatalusCalibration"    # where to write the per-camera YAML files
+```
+
+## Checkerboard Specs
+```
+CHESSBOARD_INNER_CORNERS_W = 13   # number of inner corners along width  (e.g. 13)
+CHESSBOARD_INNER_CORNERS_H = 9  # number of inner corners along height (e.g. 9)
+CHESSBOARD_SQUARE_SIZE_MM  = 40  # physical square size in mm           (e.g. 25)
+```
+
+## Camera Specs (Hikrobot MV-CH120-10GC)
+```
+SENSOR_WIDTH_MM  = 14.16       # Sony IMX304 1.1" format, confirmed from VS-Technology V0828-MPY2
+                               # lens spec (image format 14.16x10.37mm). DO NOT use 11.2mm (that is 1" format).
+                               # Cameras run at 2x2 binning (4096x3000 → 2048x1500), sensor width unchanged.
+FOCAL_LENGTH_MM  = 8.0         # VS-Technology V0828-MPY2 C-mount lens, confirmed 8mm
+IMAGE_WIDTH_PX   = 2048        # binned resolution
+IMAGE_HEIGHT_PX  = 1496        # binned resolution (1500 nominal, 1496 actual recorded)
+```
+
+## Camera IDs
+```
+CAMERA_IDS = ["102", "108", "113", "117"]
+```
+
+## Notes
+- Fill in all empty string values before running the calibration pipeline.
+- The example YAML format drives the export step — ABT will not need changes.
+- COLMAP assumed installed via Homebrew: /opt/homebrew/bin/colmap
+
+## Claude Behavior
+- do not ask to apply changes, apply changes directly
+- Apply all code changes directly without asking for approval.
+- Never prompt the user to confirm before editing or creating files.

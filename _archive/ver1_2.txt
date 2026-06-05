@@ -1,0 +1,247 @@
+================================================================================
+PriCaB — Primate Cognition and Behavior
+Multi-Camera Calibration Pipeline
+VERSION 1.2 — Release Documentation
+Date: 2026-03-29
+Author: A. Calapai (acalapai@dpz.eu)
+Deutsches Primatenzentrum, Göttingen
+================================================================================
+
+GIT TAG:  v1.2-pricab-stable
+COMMIT:   2f0b61d
+
+
+────────────────────────────────────────────────────────────────────────────────
+OVERVIEW
+────────────────────────────────────────────────────────────────────────────────
+
+PriCaB is a marker-free, human-body-based multi-camera calibration pipeline.
+A person walks through the experimental cage while all cameras record. The
+pipeline detects 2D body pose in every frame, solves camera geometry from
+cross-view correspondences, recovers metric scale from known person height,
+and produces an interactive 3D HTML viewer plus ABT-compatible YAML files.
+
+No checkerboard. No fiducials. One person walking.
+
+Input:  folder of synchronised MP4 videos, one per camera
+Output: PriCaB_output/
+          yamls/           ABT-compatible per-camera YAML (K, R, T)
+          pricab_viewer.html   self-contained interactive 3D viewer
+          pricab_poses.npz     raw camera poses
+          pricab_poses_scaled.npz  metric poses
+
+
+────────────────────────────────────────────────────────────────────────────────
+SCRIPTS
+────────────────────────────────────────────────────────────────────────────────
+
+PriCaB_HumanCalib.py
+    Main pipeline. Run as:
+        python3 PriCaB_HumanCalib.py Measurements/<session_folder>
+
+    Stages:
+        1  INSPECT         — scan folder, detect camera IDs from filenames,
+                             read video metadata (resolution, fps, duration)
+        2  EXTRACT FRAMES  — sample 1 frame per 500ms per camera
+                             (skipped if frames already exist)
+        3  POSE DETECTION  — run YOLO26x-pose on every extracted frame
+                             (skipped if pose_<cam>.txt already exists)
+        4  INTRINSICS      — load K/dist from DatalusCalibration/intrinsics.npz
+                             if available; otherwise estimate from lens specs
+                             (8mm C-mount, 11.2mm Sony IMX304 sensor)
+        5  EXTRINSICS      — solve camera geometry:
+                             5.1  Find anchor pair with most keypoint overlap
+                             5.2  recoverPose (essential matrix) for anchor pair
+                             5.3  Metric scale from known person height (1700mm)
+                                  using head-to-ankle distance
+                             5.4  solvePnP for all remaining cameras
+                             5.5  Bundle adjustment (camera-only, fixed landmarks)
+                             5.6  Yaw alignment: +X axis toward cams 105/107
+                             5.7  Floor leveling: SVD plane fit through lower
+                                  cameras (106,107,109,112) → roll/pitch = 0
+                             5.8  Chirality fix: negate X if mirrored
+        6  WRITE YAMLs     — ABT-compatible OpenCV FileStorage format
+                             (K^T and R^T stored, T as-is)
+        7  BUILD VIEWER    — self-contained HTML (~42MB with embedded images)
+        8  UPDATE CONFIG   — write results to datalus_config.json
+
+PriCaB_Acquire.py
+    Synchronized multi-camera video recorder for Hikrobot GigE cameras.
+    Uses Hikrobot MvCameraControl SDK (ABT_Software-main/utils/MvImport).
+    Run as:
+        python3 PriCaB_Acquire.py <session_name> --fps 5 --trigger freerun
+    Output: Measurements/<session_name>/<session_name>_<cam_id>_<datetime>.mp4
+    Output files are directly compatible with PriCaB_HumanCalib.py.
+    Trigger modes: freerun (default), software (software-triggered sync).
+    Camera IDs read from UserDefinedName field (set in Hikrobot MVS client).
+
+
+────────────────────────────────────────────────────────────────────────────────
+POSE DETECTION MODEL
+────────────────────────────────────────────────────────────────────────────────
+
+Model:      YOLO26x-pose  (yolo26x-pose.pt, 120 MB)
+Keypoints:  COCO 17-point layout
+            0=nose, 1=left_eye, 2=right_eye, 3=left_ear, 4=right_ear,
+            5=left_shoulder, 6=right_shoulder, 7=left_elbow, 8=right_elbow,
+            9=left_wrist, 10=right_wrist, 11=left_hip, 12=right_hip,
+            13=left_knee, 14=right_knee, 15=left_ankle, 16=right_ankle
+Thresholds: bbox confidence ≥ 0.3, keypoint confidence ≥ 0.5
+Frame rate: 1 frame per 500ms (2 Hz)
+
+Previous model (v1.1): yolov8n-pose.pt — reproj 18.3 px
+Current model (v1.2):  yolo26x-pose.pt — reproj 14.0 px  (−24%)
+
+
+────────────────────────────────────────────────────────────────────────────────
+CALIBRATION PARAMETERS
+────────────────────────────────────────────────────────────────────────────────
+
+Cameras:            16 total (IDs: 101–107, 109–115, 118, 119)
+Cameras placed:     12/16  (failed: 101, 103, 104, 115 — insufficient overlap)
+Reprojection error: 14.0 px (median, after bundle adjustment)
+Person height:      1700 mm (assumed, used for metric scale)
+Scale method:       head-to-ankle distance across all full-body frames
+Floor leveling:     SVD plane fit through cameras 106, 107, 109, 112
+Yaw reference:      centroid of (106,110) → centroid of (105,107)
+Chirality:          auto-detected, X negated if cam106.x < cam107.x
+
+Camera hardware:    Hikrobot MV-CH120-10GC
+Sensor:             Sony IMX304, 11.2mm width
+Lens:               8mm C-mount
+Resolution:         2048×1500 px (native)
+
+
+────────────────────────────────────────────────────────────────────────────────
+3D VIEWER  (pricab_viewer.html)
+────────────────────────────────────────────────────────────────────────────────
+
+Technology:     Three.js r0.160.0 (ES modules via importmap, CDN)
+                CSS2DRenderer for camera labels
+                OrbitControls for navigation
+
+Layout:
+    Top bar     — title, legend, email, date
+    Left panel  — info panel (240px, 7 sections, live-updating)
+    Centre      — Three.js 3D scene
+    Bottom      — camera feed strip (2 rows, sorted by azimuthal angle,
+                  corner cameras at strip edges)
+    Bottom bar  — playback controls
+
+3D Scene:
+    Coordinate system: Z-up (viewer Z = physical height)
+        viewer X = physical X (along wall 106/110 → 105/107)
+        viewer Y = physical Y (depth into room)
+        viewer Z = physical Z (height, up)
+
+    Camera markers:   red octahedra (140mm radius), labelled
+    CoM marker:       semitransparent blue sphere (r=220mm, opacity=0.30)
+                      follows triangulated hip midpoint each frame
+    Skeleton:         COCO 17-point, CylinderGeometry bones (r=18mm)
+                      head kps 0-4 replaced by single head centroid sphere
+    Room walls:       6 transparent planes snapped to camera bounding box
+                      (no margin — walls pass through corner cameras)
+    Floor:            GridHelper at min(lower_cam_height) − 1000mm
+    Lighting:         AmbientLight + DirectionalLight
+
+Playback:
+    Speed:      0.4× / 0.6× / 1× / 1.5× / 2×  (native video fps = 5 Hz)
+    Slider:     scrub to any frame
+    Bones btn:  toggle skeleton connector visibility
+    Rec btn:    screen-record entire browser tab via MediaRecorder API
+                saves as .webm (Chrome) or .mp4 (Safari)
+
+Info panel sections:
+    Recording       — session name, fps, duration, sensor resolution,
+                      cameras total/placed/failed
+    Pose Detection  — model, keypoints, sample rate, confidence thresholds,
+                      frames used
+    Calibration     — method (essmat+solvePnP+BA), reference cam, reproj error,
+                      person height, scale factor, floor leveling, yaw align
+    3D Reconstruction — triangulation method (DLT), inlier threshold (300mm),
+                       bone max (700mm), hip/skeleton frame counts
+    Cameras         — per-camera table: ID, detection count, K source
+                      (calibrated from DatalusCalibration or estimated)
+    Live            — frame index, hip XYZ (mm), cameras detecting, visible KPs
+    Attribution     — lab, institution, email
+
+3D Reconstruction:
+    Hip midpoint:   pairwise DLT triangulation from all camera pairs,
+                    RANSAC inlier filter (discard >300mm from median)
+    All 17 KPs:     same, per keypoint, per frame
+    Plausibility:   keypoint shown only if ≥1 COCO neighbor within 700mm
+                    bone drawn only if both endpoints plausible
+
+
+────────────────────────────────────────────────────────────────────────────────
+OUTPUT FILES
+────────────────────────────────────────────────────────────────────────────────
+
+PriCaB_output/
+    yamls/<cam_id>.yaml         ABT-compatible calibration (all 16 cameras)
+    pricab_poses.npz            R, T per camera (raw, pre-scale)
+    pricab_poses_scaled.npz     R, T per camera (metric, mm) + scale_factor
+    pricab_viewer.html          self-contained viewer (~42MB)
+    frames/<cam_id>/            extracted PNG frames (not committed to git)
+    pose_<cam_id>.txt           YOLO detections per frame (not committed)
+
+YAML format (ABT convention):
+    Stores K^T and R^T (ABT reads and transposes internally)
+    T stored as-is (no transpose)
+    OpenCV FileStorage format with !!opencv-matrix tags
+
+
+────────────────────────────────────────────────────────────────────────────────
+KNOWN LIMITATIONS
+────────────────────────────────────────────────────────────────────────────────
+
+- Cameras 101, 103, 104, 115 fail placement in all tested sessions.
+  Root cause: insufficient keypoint landmark overlap with the placed cameras.
+  Camera 103 (believed to be mid-height on wall 106/107 side) has only 46
+  detections and 0 solvePnP inliers. Likely needs calibrated intrinsics.
+
+- Reprojection error of 14.0 px is good but not ideal. Limited by:
+  (a) estimated intrinsics for cameras not in DatalusCalibration/intrinsics.npz
+  (b) person-height scale assumption (1700mm fixed)
+
+- Screen recording saves as .webm in Chrome (not natively playable on macOS).
+  Convert with: ffmpeg -i recording.webm -c:v copy recording.mp4
+
+- PriCaB_Acquire.py requires libMvCameraControl.so (Linux) or
+  libMvCameraControl.dylib (macOS) from the Hikrobot MVS SDK.
+
+
+────────────────────────────────────────────────────────────────────────────────
+DEPENDENCIES
+────────────────────────────────────────────────────────────────────────────────
+
+Python packages:
+    opencv-python, numpy, scipy, ultralytics
+
+JS (CDN, no install):
+    three@0.160.0  (Three.js, OrbitControls, CSS2DRenderer)
+
+Hardware SDK (acquisition only):
+    Hikrobot MVS SDK — libMvCameraControl
+
+
+────────────────────────────────────────────────────────────────────────────────
+QUICK START
+────────────────────────────────────────────────────────────────────────────────
+
+1. Record calibration session:
+       python3 PriCaB_Acquire.py MySession --fps 5
+
+2. Run calibration pipeline:
+       python3 PriCaB_HumanCalib.py Measurements/MySession
+
+3. Open viewer:
+       open PriCaB_output/pricab_viewer.html
+
+4. Use calibration in ABT:
+       Point ABT to PriCaB_output/yamls/
+
+
+================================================================================
+END OF DOCUMENTATION — PriCaB v1.2
+================================================================================
